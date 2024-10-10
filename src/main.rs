@@ -242,10 +242,12 @@ async fn led_task(
                             glow_mode: GlowMode::default(),
                             brightness: DEFAULT_BRIGHTNESS,
                         };
+                        println!("switching lightstrip off");
                     }
                     Lightstrip::On { .. } => {
                         switch_pin.set_low();
                         lightstrip = Lightstrip::Off;
+                        println!("switching lightstrip on");
                     }
                 }
             }

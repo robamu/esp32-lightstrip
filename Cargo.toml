@@ -1,5 +1,5 @@
 [package]
-name = "esp32-s3-rs"
+name = "esp32-lightstrip"
 version = "0.1.0"
 authors = ["Robin Mueller <robin.mueller.m@gmail.com>"]
 edition = "2021"
@@ -12,20 +12,31 @@ esp-backtrace = { version = "0.14.0", features = [
     "panic-handler",
     "println",
 ] }
-esp-hal = { version = "0.20.1", features = [ "esp32c6" ] }
-esp-hal-smartled = { version = "0.13", features = [ "esp32c6" ] }
+esp-hal = { version = "0.21.0", features = [ "esp32c6" ] }
 embedded-hal = "1"
 smart-leds = "0.4"
 esp-println = { version = "0.11.0", features = ["esp32c6", "log"] }
-infrared = { version = "0.14", git = "https://github.com/jkristell/infrared.git", branch = "embedded-hal1_0" }
 dummy-pin = "1"
 critical-section = "1"
 log = { version = "0.4.21" }
 embassy-executor = { version = "0.6.0", features = ["task-arena-size-40960"] }
 embassy-sync = "0.6.0"
-embassy-time = "0.3.1"
-esp-hal-embassy  = { version = "0.3", features = ["esp32c6"]}
+embassy-time = "0.3.2"
 
+[dependencies.esp-hal-embassy]
+version = "0.4"
+features = ["esp32c6", "integrated-timers"]
+
+[dependencies.infrared]
+version = "0.14"
+git = "https://github.com/jkristell/infrared.git"
+branch = "embedded-hal1_0"
+
+[dependencies.esp-hal-smartled]
+git = "https://github.com/robamu/esp-hal-community.git"
+branch = "bump-allowed-hal-version"
+version = "0.13.1"
+features = ["esp32c6"]
 
 [profile.dev]
 # Rust debug is too slow.

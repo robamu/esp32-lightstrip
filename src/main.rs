@@ -1,24 +1,17 @@
 #![no_std]
 #![no_main]
 
-use core::{
-    borrow::BorrowMut,
-    cell::{Cell, RefCell},
-};
-use critical_section::{CriticalSection, Mutex};
+use core::cell::RefCell;
+use critical_section::Mutex;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
-    clock::ClockControl,
-    delay::Delay,
-    gpio::{self, Input, Io, Level, Output, Pull},
-    peripherals::{Peripherals, TIMG0},
+    gpio::{Input, Io, Level, Output, Pull},
+    peripherals::TIMG0,
     prelude::*,
     rmt::Rmt,
-    system::SystemControl,
     timer::timg,
 };
 
@@ -35,30 +28,32 @@ const BED_LIGHTSTRIPS_LEDS: usize = 46;
 
 type IrReceiver = Receiver<Nec, DummyPin>;
 type Timer = timg::Timer<timg::Timer0<TIMG0>, esp_hal::Blocking>;
-static IR_PIN: Mutex<RefCell<Option<Input<'static, gpio::Gpio2>>>> = Mutex::new(RefCell::new(None));
+static IR_PIN: Mutex<RefCell<Option<Input<'static>>>> = Mutex::new(RefCell::new(None));
 static TIMER: Mutex<RefCell<Option<Timer>>> = Mutex::new(RefCell::new(None));
 static RECEIVER: Mutex<RefCell<Option<IrReceiver>>> = Mutex::new(RefCell::new(None));
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    let peripherals = Peripherals::take();
-    let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = ClockControl::max(system.clock_control).freeze();
+    let peripherals = esp_hal::init(esp_hal::Config::default());
+    //let system = SystemControl::new(peripherals.SYSTEM);
+    //let clocks = ClockControl::max(system.clock_control).freeze();
 
     esp_println::logger::init_logger_from_env();
 
     let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     io.set_interrupt_handler(handler);
 
-    let timg0 = timg::TimerGroup::new(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0.timer0);
+    let timg0 = timg::TimerGroup::new(peripherals.TIMG0);
+    esp_hal_embassy::init(timg0.timer0);
 
     // Hardware timer for high frequency tick counting for IR receiver.
-    let timg1 = timg::TimerGroup::new(peripherals.TIMG1, &clocks);
+    /*
+    let timg1 = timg::TimerGroup::new(peripherals.TIMG1);
+    */
     //timg1.timer0.start(1.MHz(), 0xffff_ffff);
 
-    let rmt = Rmt::new(peripherals.RMT, 80.MHz(), &clocks).unwrap();
-    let mut rgb_pin = io.pins.gpio8;
+    let rmt = Rmt::new(peripherals.RMT, 80.MHz()).unwrap();
+    let mut rgb_pin = Output::new(io.pins.gpio8, Level::Low);
     rgb_pin.set_low();
     let mut lightstrip_switch = Output::new(io.pins.gpio1, Level::Low);
     lightstrip_switch.set_drive_strength(esp_hal::gpio::DriveStrength::I40mA);
@@ -71,7 +66,7 @@ async fn main(_spawner: Spawner) {
     // be used directly with all `smart_led` implementations
     let rmt_buffer = [0u32; BED_LIGHTSTRIPS_LEDS * 24 + 1];
 
-    let mut led = SmartLedsAdapter::new(rmt.channel0, io.pins.gpio0, rmt_buffer, &clocks);
+    let mut led = SmartLedsAdapter::new(rmt.channel0, io.pins.gpio0, rmt_buffer);
 
     let receiver = receiver::Builder::default()
         .nec()
@@ -122,6 +117,7 @@ fn handler() {
             .unwrap()
             .is_interrupt_set()
         {
+            /*
             match RECEIVER
                 .borrow_ref_mut(cs)
                 .as_mut()
@@ -131,6 +127,7 @@ fn handler() {
                 Ok(opt_cmd) => {}
                 Err(_) => {}
             }
+            */
         }
     });
 }

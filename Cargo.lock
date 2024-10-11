@@ -482,7 +482,7 @@ dependencies = [
 [[package]]
 name = "esp-hal-smartled"
 version = "0.13.1"
-source = "git+https://github.com/robamu/esp-hal-community.git?branch=bump-allowed-hal-version#58014bfb6a32bc1bd21e9a9f60f2bdb5ca76f4e5"
+source = "git+https://github.com/robamu/esp-hal-community.git?branch=non-blocking-smart-led#793bcaa092a2241636074402fd948cbb859ee06a"
 dependencies = [
  "defmt",
  "document-features",

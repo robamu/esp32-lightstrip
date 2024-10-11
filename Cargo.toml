@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Robin Mueller <robin.mueller.m@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
+default-run = "esp32-lightstrip"
 
 [dependencies]
 esp-backtrace = { version = "0.14.0", features = [
@@ -40,7 +41,7 @@ features = ["defmt"]
 
 [dependencies.esp-hal-smartled]
 git = "https://github.com/robamu/esp-hal-community.git"
-branch = "bump-allowed-hal-version"
+branch = "non-blocking-smart-led"
 version = "0.13.1"
 features = ["esp32c6", "defmt"]
 

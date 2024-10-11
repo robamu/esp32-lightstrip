@@ -1,8 +1,11 @@
 #![no_std]
 #![no_main]
 
+mod async_test;
+
 use core::cell::Cell;
 use core::cell::RefCell;
+use core::slice::IterMut;
 
 use critical_section::Mutex;
 use defmt::println;
@@ -13,17 +16,24 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::InputPin;
 use esp_backtrace as _;
+use esp_hal::clock::Clocks;
 use esp_hal::gpio;
+use esp_hal::gpio::PeripheralOutput;
+use esp_hal::peripheral::Peripheral;
+use esp_hal::rmt::asynch::TxChannelAsync;
+use esp_hal::rmt::PulseCode;
 use esp_hal::rmt::Rmt;
+use esp_hal::rmt::TxChannelConfig;
+use esp_hal::rmt::TxChannelCreatorAsync;
 use esp_hal::time;
 use esp_hal::time::Instant;
-use esp_hal::Blocking;
+use esp_hal::Async;
 use esp_hal::{
     gpio::{Input, Io, Level, Output, Pull},
     prelude::*,
     timer::timg,
 };
-use esp_hal_smartled::SmartLedsAdapter;
+use esp_hal_smartled::LedAdapterError;
 use esp_println as _;
 use infrared::protocol::nec::NecCommand;
 use infrared::receiver::time::InfraMonotonic;
@@ -36,7 +46,7 @@ use smart_leds::colors;
 use smart_leds::{
     brightness, gamma,
     hsv::{hsv2rgb, Hsv},
-    SmartLedsWrite, RGB8,
+    RGB8,
 };
 
 const LED_CMD_CHECK_FREQ_MS: u64 = 200;
@@ -49,7 +59,9 @@ const DEFAULT_PULSE_FREQUENCY_MS: u32 = 5000;
 const DEFAULT_RAINBOW_FREQUENCY_MS: u32 = 20000;
 const FULL_MOVING_RAINBOW_CYCLE_FREQUENCY_MS: u32 = 10000;
 
-const RMT_BUF_LEN: usize = BED_LIGHTSTRIPS_LEDS * 24 + 1;
+/// Written values for RGB channel and 0 termination.
+const LED_RMT_BUF_LEN: usize = 3 * 8 + 1;
+const RMT_BUF_LEN: usize = BED_LIGHTSTRIPS_LEDS * LED_RMT_BUF_LEN;
 type IrReceiver = Receiver<Nec, DummyPin, time::Instant, remotecontrol::Button<ElegooRemote>>;
 type ChannelPayload = remotecontrol::Button<ElegooRemote>;
 static IR_CHANNEL: Channel<CriticalSectionRawMutex, ChannelPayload, IR_CMD_CHANNEL_DEPTH> =
@@ -109,25 +121,22 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    io.set_interrupt_handler(irq_handler);
+    io.set_interrupt_handler(gpio_irq_handler);
 
     let timg0 = timg::TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
     let led_pin = Output::new(io.pins.gpio0, Level::Low);
 
-    let rmt = Rmt::new(peripherals.RMT, 80.MHz()).unwrap();
+    let rmt = Rmt::new_async(peripherals.RMT, 80.MHz()).unwrap();
     let mut rgb_pin = Output::new(io.pins.gpio8, Level::Low);
     rgb_pin.set_low();
 
     let mut lightstrip_switch = Output::new(io.pins.gpio1, Level::Low);
     lightstrip_switch.set_drive_strength(esp_hal::gpio::DriveStrength::I40mA);
-    lightstrip_switch.set_low();
+    lightstrip_switch.set_high();
 
     let mut ir_input = Input::new(io.pins.gpio3, Pull::Up);
-
-    // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
-    // be used directly with all `smart_led` implementations
 
     let receiver: IrReceiver = receiver::Builder::default()
         .nec()
@@ -152,6 +161,7 @@ async fn main(spawner: Spawner) {
         nec_cmd_received = false;
         if let Ok(cmd) = IR_CHANNEL.receiver().try_receive() {
             debug!("received NEC command: {:?}", cmd);
+            nec_cmd_received = true;
             if let Some(button) = cmd.action() {
                 if !cmd.is_repeat() {
                     match button {
@@ -185,7 +195,6 @@ async fn main(spawner: Spawner) {
                     }
                 }
             }
-            nec_cmd_received = true;
         }
         if !nec_cmd_received {
             ctrl_ticker.next().await;
@@ -194,7 +203,7 @@ async fn main(spawner: Spawner) {
 }
 
 #[handler]
-fn irq_handler() {
+fn gpio_irq_handler() {
     let mut ir_channel_full = false;
     let mut nec_error = None;
     critical_section::with(|cs| {
@@ -230,29 +239,6 @@ fn irq_handler() {
     }
 }
 
-#[embassy_executor::task]
-async fn ir_receiver_task(mut ir_input: Input<'static>, mut ir_receiver: IrReceiver) {
-    let mut last_event = time::Instant::ZERO_INSTANT;
-    let sender = IR_CHANNEL.sender();
-    loop {
-        ir_input.wait_for_any_edge().await;
-        let timestamp = time::now();
-        let dt = timestamp - last_event;
-        last_event = timestamp;
-        match ir_receiver.event_edge(dt, ir_input.is_low()) {
-            Ok(Some(cmd)) => {
-                if let Err(_e) = sender.try_send(cmd) {
-                    warn!("NEC command channel is full");
-                }
-            }
-            Ok(None) => (),
-            Err(e) => {
-                warn!("NEC error: {:?}", e);
-            }
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, defmt::Format)]
 pub enum LightModeCommand {
     Rainbow,
@@ -266,13 +252,15 @@ pub enum LightModeState {
     Rainbow(RainbowParameters),
     OneColor(RGB8),
     Pulsing(PulseParameters),
-    MovingRainbow {
-        current_start_hue: u8,
-        current_ticks: u32,
-        ms_per_hue_inc: u32,
-    },
+    MovingRainbow(MovingRainbowParameters),
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct MovingRainbowParameters {
+    current_start_hue: u8,
+    current_ticks: u32,
+    ms_per_hue_inc: u32,
+}
 impl Default for LightModeState {
     fn default() -> Self {
         LightModeState::Rainbow(RainbowParameters::new(
@@ -292,25 +280,50 @@ pub enum Lightstrip {
     },
 }
 
+#[derive(Debug)]
+pub struct LedState {
+    current_brightness: u8,
+    current_rainbow_parameters: RainbowParameters,
+    current_pulse_parameters: PulseParameters,
+    current_one_color: RGB8,
+    current_moving_rainbow_parameters: MovingRainbowParameters,
+}
+
+impl Default for LedState {
+    fn default() -> Self {
+        let current_one_color = colors::CRIMSON;
+        Self {
+            current_brightness: DEFAULT_BRIGHTNESS,
+            current_rainbow_parameters: RainbowParameters::new(
+                DEFAULT_RAINBOW_FREQUENCY_MS,
+                LED_FINE_TICKER_FREQ as u32,
+            ),
+            current_pulse_parameters: PulseParameters::new(
+                current_one_color,
+                DEFAULT_PULSE_FREQUENCY_MS,
+                LED_FINE_TICKER_FREQ as u32,
+            ),
+            current_moving_rainbow_parameters: MovingRainbowParameters {
+                current_start_hue: 0,
+                current_ticks: 0,
+                ms_per_hue_inc: FULL_MOVING_RAINBOW_CYCLE_FREQUENCY_MS / 255,
+            },
+            current_one_color,
+        }
+    }
+}
 #[embassy_executor::task]
 async fn led_task(
-    rmt: Rmt<'static, Blocking>,
+    rmt: Rmt<'static, Async>,
     led_pin: Output<'static>,
     mut switch_pin: Output<'static>,
 ) {
     let rmt_buffer = [0u32; RMT_BUF_LEN];
-    let current_brightness = DEFAULT_BRIGHTNESS;
-    let current_one_color = colors::CRIMSON;
-    let current_pulse_parameters = PulseParameters::new(
-        current_one_color,
-        DEFAULT_PULSE_FREQUENCY_MS,
-        LED_FINE_TICKER_FREQ as u32,
-    );
-    let current_rainbow_parameters =
-        RainbowParameters::new(DEFAULT_RAINBOW_FREQUENCY_MS, LED_FINE_TICKER_FREQ as u32);
+    let state = LedState::default();
     let receiver = LED_CHANNEL.receiver();
-    let mut led = SmartLedsAdapter::new(rmt.channel0, led_pin, rmt_buffer);
-
+    // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
+    // be used directly with all `smart_led` implementations
+    let mut led_helper = SmartLedAdapterAsync::new(rmt.channel0, led_pin, rmt_buffer);
     let mut ticker = Ticker::every(embassy_time::Duration::from_millis(LED_CMD_CHECK_FREQ_MS));
     let mut fine_ticker = Ticker::every(embassy_time::Duration::from_millis(LED_FINE_TICKER_FREQ));
     let divisor = LED_CMD_CHECK_FREQ_MS / LED_FINE_TICKER_FREQ;
@@ -323,57 +336,7 @@ async fn led_task(
     let mut lightstrip = Lightstrip::Off;
     loop {
         if let Ok(led_cmd) = receiver.try_receive() {
-            match led_cmd {
-                LedCmd::Switch => match lightstrip {
-                    Lightstrip::Off => {
-                        switch_pin.set_high();
-                        lightstrip = Lightstrip::On {
-                            mode: LightModeState::default(),
-                            brightness: DEFAULT_BRIGHTNESS,
-                        };
-                        info!("switching lightstrip on");
-                    }
-                    Lightstrip::On { .. } => {
-                        switch_pin.set_low();
-                        lightstrip = Lightstrip::Off;
-                        info!("switching lightstrip off");
-                    }
-                },
-                LedCmd::SelectMode(light_mode_cmd) => match light_mode_cmd {
-                    LightModeCommand::Rainbow => {
-                        info!("rainbow mode");
-                        lightstrip = Lightstrip::On {
-                            mode: LightModeState::Rainbow(current_rainbow_parameters),
-                            brightness: current_brightness,
-                        };
-                    }
-                    LightModeCommand::OneColor => {
-                        info!("one color");
-                        lightstrip = Lightstrip::On {
-                            mode: LightModeState::OneColor(current_one_color),
-                            brightness: current_brightness,
-                        };
-                    }
-                    LightModeCommand::Pulsing => {
-                        info!("pulse mode");
-                        lightstrip = Lightstrip::On {
-                            mode: LightModeState::Pulsing(current_pulse_parameters),
-                            brightness: current_brightness,
-                        };
-                    }
-                    LightModeCommand::MovingRainbow => {
-                        info!("moving rainbow");
-                        lightstrip = Lightstrip::On {
-                            mode: LightModeState::MovingRainbow {
-                                current_start_hue: 0,
-                                current_ticks: 0,
-                                ms_per_hue_inc: FULL_MOVING_RAINBOW_CYCLE_FREQUENCY_MS / 255,
-                            },
-                            brightness: current_brightness,
-                        };
-                    }
-                },
-            }
+            handle_led_cmd(led_cmd, &mut lightstrip, &state, &mut switch_pin);
         }
         match &mut lightstrip {
             Lightstrip::Off => {
@@ -387,18 +350,22 @@ async fn led_task(
                     LightModeState::Pulsing(pulse_params) => {
                         data = [pulse_params.color; BED_LIGHTSTRIPS_LEDS];
                         for _ in 0..=divisor {
-                            led.write(brightness(
-                                gamma(data.iter().cloned()),
-                                pulse_params.brightness_for_pulse(),
-                            ))
-                            .unwrap();
+                            led_helper
+                                .write(brightness(
+                                    gamma(data.iter().cloned()),
+                                    pulse_params.brightness_for_pulse(),
+                                ))
+                                .await
+                                .unwrap();
                             pulse_params.increment();
                             fine_ticker.next().await;
                         }
                     }
                     LightModeState::OneColor(rgb) => {
                         data = [*rgb; BED_LIGHTSTRIPS_LEDS];
-                        led.write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                        led_helper
+                            .write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                            .await
                             .unwrap();
                         ticker.next().await;
                     }
@@ -410,27 +377,24 @@ async fn led_task(
                             // color to the other) to the RGB color space that we can then send to the LED
                             data = [hsv2rgb(color); BED_LIGHTSTRIPS_LEDS];
                             // When sending to the LED, we do a gamma correction first (see smart_leds
-                            // documentation for details) and then limit the brightness to 10 out of 255 so
-                            // that the output it's not too bright.
-                            led.write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                            // documentation for details).
+                            led_helper
+                                .write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                                .await
                                 .unwrap();
                             rainbow_params.increment();
                             fine_ticker.next().await;
                         }
                     }
-                    LightModeState::MovingRainbow {
-                        current_start_hue,
-                        current_ticks,
-                        ms_per_hue_inc,
-                    } => {
+                    LightModeState::MovingRainbow(params) => {
                         for _ in 0..=divisor {
                             for (idx, next_rgb) in data.iter_mut().enumerate() {
                                 if idx == 0 {
-                                    color.hue = *current_start_hue;
+                                    color.hue = params.current_start_hue;
                                 } else {
-                                    color.hue = (*current_start_hue
+                                    color.hue = (params.current_start_hue as u16
                                         + floorf(idx as f32 / BED_LIGHTSTRIPS_LEDS as f32 * 255.0)
-                                            as u8
+                                            as u16
                                             % 255)
                                         as u8;
                                 }
@@ -438,22 +402,26 @@ async fn led_task(
                             }
                             // Convert from the HSV color space (where we can easily transition from one
                             // color to the other) to the RGB color space that we can then send to the LED
-                            led.write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                            led_helper
+                                .write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                                .await
                                 .unwrap();
 
-                            if *ms_per_hue_inc > LED_FINE_TICKER_FREQ as u32 {
+                            if params.ms_per_hue_inc > LED_FINE_TICKER_FREQ as u32 {
                                 // Need to skip increments
-                                let skips_needed =
-                                    roundf(*ms_per_hue_inc as f32 / LED_FINE_TICKER_FREQ as f32)
-                                        as u32;
+                                let skips_needed = roundf(
+                                    params.ms_per_hue_inc as f32 / LED_FINE_TICKER_FREQ as f32,
+                                ) as u32;
                                 // Only update the hue after skipping `skips_needed` ticks
-                                if *current_ticks % skips_needed == 0 {
-                                    *current_start_hue += 1;
+                                if params.current_ticks % skips_needed == 0 {
+                                    params.current_start_hue += 1;
                                 }
-                                *current_ticks += 1;
+                                params.current_ticks += 1;
                             } else {
                                 // Might need to increment more than 1 hue
-                                *current_start_hue += ((20 / *ms_per_hue_inc) % 255) as u8;
+                                params.current_start_hue +=
+                                    ((LED_FINE_TICKER_FREQ as u32 / params.ms_per_hue_inc) % 255)
+                                        as u8;
                             }
                             fine_ticker.next().await;
                         }
@@ -461,6 +429,61 @@ async fn led_task(
                 }
             }
         }
+    }
+}
+
+fn handle_led_cmd(
+    led_cmd: LedCmd,
+    lightstrip: &mut Lightstrip,
+    state: &LedState,
+    switch_pin: &mut Output<'static>,
+) {
+    match led_cmd {
+        LedCmd::Switch => match lightstrip {
+            Lightstrip::Off => {
+                switch_pin.set_high();
+                *lightstrip = Lightstrip::On {
+                    mode: LightModeState::default(),
+                    brightness: DEFAULT_BRIGHTNESS,
+                };
+                info!("switching lightstrip on");
+            }
+            Lightstrip::On { .. } => {
+                switch_pin.set_low();
+                *lightstrip = Lightstrip::Off;
+                info!("switching lightstrip off");
+            }
+        },
+        LedCmd::SelectMode(light_mode_cmd) => match light_mode_cmd {
+            LightModeCommand::Rainbow => {
+                info!("rainbow mode");
+                *lightstrip = Lightstrip::On {
+                    mode: LightModeState::Rainbow(state.current_rainbow_parameters),
+                    brightness: state.current_brightness,
+                };
+            }
+            LightModeCommand::OneColor => {
+                info!("one color");
+                *lightstrip = Lightstrip::On {
+                    mode: LightModeState::OneColor(state.current_one_color),
+                    brightness: state.current_brightness,
+                };
+            }
+            LightModeCommand::Pulsing => {
+                info!("pulse mode");
+                *lightstrip = Lightstrip::On {
+                    mode: LightModeState::Pulsing(state.current_pulse_parameters),
+                    brightness: state.current_brightness,
+                };
+            }
+            LightModeCommand::MovingRainbow => {
+                info!("moving rainbow");
+                *lightstrip = Lightstrip::On {
+                    mode: LightModeState::MovingRainbow(state.current_moving_rainbow_parameters),
+                    brightness: state.current_brightness,
+                };
+            }
+        },
     }
 }
 
@@ -549,5 +572,125 @@ impl RainbowParameters {
 
     pub fn increment(&mut self) {
         self.scaling.increment();
+    }
+}
+
+const SK68XX_CODE_PERIOD: u32 = 1200;
+const SK68XX_T0H_NS: u32 = 320;
+const SK68XX_T0L_NS: u32 = SK68XX_CODE_PERIOD - SK68XX_T0H_NS;
+const SK68XX_T1H_NS: u32 = 640;
+const SK68XX_T1L_NS: u32 = SK68XX_CODE_PERIOD - SK68XX_T1H_NS;
+
+/// Adapter taking an RMT channel and a specific pin and providing RGB LED
+/// interaction functionality using the `smart-leds` crate
+pub struct SmartLedAdapterAsync<Tx, const BUFFER_SIZE: usize> {
+    channel: Tx,
+    rmt_buffer: [u32; BUFFER_SIZE],
+    pulses: (u32, u32),
+}
+
+impl<'d, Tx: TxChannelAsync, const BUFFER_SIZE: usize> SmartLedAdapterAsync<Tx, BUFFER_SIZE> {
+    /// Create a new adapter object that drives the pin using the RMT channel.
+    pub fn new<C, O>(
+        channel: C,
+        pin: impl Peripheral<P = O> + 'd,
+        rmt_buffer: [u32; BUFFER_SIZE],
+    ) -> SmartLedAdapterAsync<Tx, BUFFER_SIZE>
+    where
+        O: PeripheralOutput + 'd,
+        C: TxChannelCreatorAsync<'d, Tx, O>,
+    {
+        let config = TxChannelConfig {
+            clk_divider: 1,
+            idle_output_level: false,
+            carrier_modulation: false,
+            idle_output: true,
+
+            ..TxChannelConfig::default()
+        };
+
+        let channel = channel.configure(pin, config).unwrap();
+        // Assume the RMT peripheral is set up to use the APB clock
+        let clocks = Clocks::get();
+        let src_clock = clocks.apb_clock.to_MHz();
+
+        Self {
+            channel,
+            rmt_buffer,
+            pulses: (
+                u32::from(PulseCode {
+                    level1: true,
+                    length1: ((SK68XX_T0H_NS * src_clock) / 1000) as u16,
+                    level2: false,
+                    length2: ((SK68XX_T0L_NS * src_clock) / 1000) as u16,
+                }),
+                u32::from(PulseCode {
+                    level1: true,
+                    length1: ((SK68XX_T1H_NS * src_clock) / 1000) as u16,
+                    level2: false,
+                    length2: ((SK68XX_T1L_NS * src_clock) / 1000) as u16,
+                }),
+            ),
+        }
+    }
+
+    pub async fn write(
+        &mut self,
+        led: impl IntoIterator<Item = RGB8>,
+    ) -> Result<(), LedAdapterError> {
+        self.prepare_rmt_buffer(led)?;
+        for chunk in self.rmt_buffer.chunks(25) {
+            self.channel
+                .transmit(chunk)
+                .await
+                .map_err(LedAdapterError::TransmissionError)?;
+        }
+        Ok(())
+    }
+
+    pub fn prepare_rmt_buffer(
+        &mut self,
+        iterator: impl IntoIterator<Item = RGB8>,
+    ) -> Result<(), LedAdapterError> {
+        // We always start from the beginning of the buffer
+        let mut seq_iter = self.rmt_buffer.iter_mut();
+
+        // Add all converted iterator items to the buffer.
+        // This will result in an `BufferSizeExceeded` error in case
+        // the iterator provides more elements than the buffer can take.
+        for item in iterator {
+            Self::convert_rgb_to_pulse(item, &mut seq_iter, self.pulses)?;
+        }
+        Ok(())
+    }
+
+    /// Converts a RGB value to the correspodnign pulse value.
+    pub fn convert_rgb_to_pulse(
+        value: RGB8,
+        mut_iter: &mut IterMut<u32>,
+        pulses: (u32, u32),
+    ) -> Result<(), LedAdapterError> {
+        Self::convert_rgb_channel_to_pulses(value.g, mut_iter, pulses)?;
+        Self::convert_rgb_channel_to_pulses(value.r, mut_iter, pulses)?;
+        Self::convert_rgb_channel_to_pulses(value.b, mut_iter, pulses)?;
+        *mut_iter.next().ok_or(LedAdapterError::BufferSizeExceeded)? = 0;
+
+        Ok(())
+    }
+
+    pub fn convert_rgb_channel_to_pulses(
+        channel_value: u8,
+        mut_iter: &mut IterMut<u32>,
+        pulses: (u32, u32),
+    ) -> Result<(), LedAdapterError> {
+        for position in [128, 64, 32, 16, 8, 4, 2, 1] {
+            *mut_iter.next().ok_or(LedAdapterError::BufferSizeExceeded)? =
+                match channel_value & position {
+                    0 => pulses.0,
+                    _ => pulses.1,
+                }
+        }
+
+        Ok(())
     }
 }

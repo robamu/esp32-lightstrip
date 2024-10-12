@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+mod led;
 
 use core::cell::Cell;
 use core::cell::RefCell;
@@ -15,6 +16,7 @@ use embedded_hal::digital::InputPin;
 use esp_backtrace as _;
 use esp_hal::gpio;
 use esp_hal::rmt::Rmt;
+use esp_hal::rng::Rng;
 use esp_hal::time;
 use esp_hal::time::Instant;
 use esp_hal::Async;
@@ -28,6 +30,7 @@ use infrared::protocol::nec::NecCommand;
 use infrared::receiver::time::InfraMonotonic;
 use infrared::remotecontrol::{self, Action, RemoteControlModel};
 use infrared::{protocol::Nec, receiver, Receiver};
+use led::AdjustableSpeed;
 use libm::floorf;
 use libm::roundf;
 use log::{debug, info, warn};
@@ -44,9 +47,6 @@ const LED_FINE_TICKER_FREQ: u64 = 20;
 const BED_LIGHTSTRIPS_LEDS: usize = 46;
 const IR_CMD_CHANNEL_DEPTH: usize = 12;
 const DEFAULT_BRIGHTNESS: u8 = 80;
-const DEFAULT_PULSE_FREQUENCY_MS: u32 = 5000;
-const DEFAULT_RAINBOW_FREQUENCY_MS: u32 = 20000;
-const FULL_MOVING_RAINBOW_CYCLE_FREQUENCY_MS: u32 = 10000;
 
 type IrReceiver = Receiver<Nec, DummyPin, time::Instant, remotecontrol::Button<ElegooRemote>>;
 type ChannelPayload = remotecontrol::Button<ElegooRemote>;
@@ -59,6 +59,23 @@ static LAST_IR_EVENT: Mutex<Cell<Instant>> = Mutex::new(Cell::new(Instant::ZERO_
 
 #[derive(Debug, Default, Copy, Clone, defmt::Format)]
 pub struct ElegooRemote {}
+
+const COLOR_SET: [RGB8; 14] = [
+    colors::WHITE,
+    colors::YELLOW,
+    colors::ORANGE,
+    colors::ORANGE_RED,
+    colors::RED,
+    colors::DARK_RED,
+    colors::PURPLE,
+    colors::HOT_PINK,
+    colors::DARK_BLUE,
+    colors::BLUE,
+    colors::SKY_BLUE,
+    colors::DARK_GREEN,
+    colors::GREEN,
+    colors::YELLOW_GREEN,
+];
 
 impl RemoteControlModel for ElegooRemote {
     type Cmd = NecCommand;
@@ -94,7 +111,13 @@ impl RemoteControlModel for ElegooRemote {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LedCmd {
     Switch,
-    SelectMode(LightModeCommand),
+    SelectMode(LightMode),
+    IncreaseBrightness,
+    DecreaseBrightness,
+    IncreaseSpeed,
+    DecreaseSpeed,
+    NextColor,
+    PrevColor,
 }
 
 #[esp_hal_embassy::main]
@@ -105,6 +128,8 @@ async fn main(spawner: Spawner) {
         env!("CARGO_PKG_VERSION")
     );
     let peripherals = esp_hal::init(esp_hal::Config::default());
+
+    let rng = Rng::new(peripherals.RNG);
 
     let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     io.set_interrupt_handler(gpio_irq_handler);
@@ -139,7 +164,7 @@ async fn main(spawner: Spawner) {
     });
     let mut ctrl_ticker = Ticker::every(Duration::from_millis(100));
     spawner
-        .spawn(led_task(rmt, led_pin, lightstrip_switch))
+        .spawn(led_task(rmt, rng, led_pin, lightstrip_switch))
         .expect("spawning LED task failed");
 
     let mut nec_cmd_received;
@@ -149,42 +174,96 @@ async fn main(spawner: Spawner) {
             debug!("received NEC command: {:?}", cmd);
             nec_cmd_received = true;
             if let Some(button) = cmd.action() {
-                if !cmd.is_repeat() {
-                    match button {
-                        Action::Power => {
-                            // Ignore repeat commands.
-                            LED_CHANNEL.sender().try_send(LedCmd::Switch).unwrap()
-                        }
-                        Action::Zero => LED_CHANNEL
-                            .sender()
-                            .try_send(LedCmd::SelectMode(LightModeCommand::OneColor))
-                            .unwrap(),
-                        Action::One => {
-                            LED_CHANNEL
-                                .sender()
-                                .try_send(LedCmd::SelectMode(LightModeCommand::Pulsing))
-                                .unwrap();
-                        }
-                        Action::Two => {
-                            LED_CHANNEL
-                                .sender()
-                                .try_send(LedCmd::SelectMode(LightModeCommand::Rainbow))
-                                .unwrap();
-                        }
-                        Action::Three => {
-                            LED_CHANNEL
-                                .sender()
-                                .try_send(LedCmd::SelectMode(LightModeCommand::MovingRainbow))
-                                .unwrap();
-                        }
-                        _ => (),
-                    }
-                }
+                handle_nec_cmd(button, cmd.is_repeat());
             }
         }
         if !nec_cmd_received {
             ctrl_ticker.next().await;
         }
+    }
+}
+
+fn handle_nec_cmd(action: Action, is_repeat: bool) {
+    match action {
+        Action::Power
+        | Action::One
+        | Action::Two
+        | Action::Three
+        | Action::Four
+        | Action::Five
+        | Action::Six
+        | Action::Seven
+        | Action::Eight
+        | Action::Nine
+        | Action::Left
+        | Action::Right => {
+            if is_repeat {
+                return;
+            }
+        }
+        _ => (),
+    }
+    match action {
+        Action::Power => LED_CHANNEL.sender().try_send(LedCmd::Switch).unwrap(),
+        Action::Zero => LED_CHANNEL
+            .sender()
+            .try_send(LedCmd::SelectMode(LightMode::OneColor))
+            .unwrap(),
+        Action::One => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::SelectMode(LightMode::Pulsing))
+                .unwrap();
+        }
+        Action::Two => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::SelectMode(LightMode::Rainbow))
+                .unwrap();
+        }
+        Action::Three => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::SelectMode(LightMode::MovingRainbow))
+                .unwrap();
+        }
+        Action::Four => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::SelectMode(LightMode::Disco))
+                .unwrap();
+        }
+        Action::VolumeUp => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::IncreaseBrightness)
+                .unwrap();
+        }
+        Action::VolumeDown => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::DecreaseBrightness)
+                .unwrap();
+        }
+        Action::Up => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::IncreaseSpeed)
+                .unwrap();
+        }
+        Action::Down => {
+            LED_CHANNEL
+                .sender()
+                .try_send(LedCmd::DecreaseSpeed)
+                .unwrap();
+        }
+        Action::Left => {
+            LED_CHANNEL.sender().try_send(LedCmd::PrevColor).unwrap();
+        }
+        Action::Right => {
+            LED_CHANNEL.sender().try_send(LedCmd::NextColor).unwrap();
+        }
+        _ => (),
     }
 }
 
@@ -225,87 +304,212 @@ fn gpio_irq_handler() {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, defmt::Format)]
-pub enum LightModeCommand {
+#[derive(Debug, Default, PartialEq, Eq, defmt::Format)]
+pub enum LightMode {
+    #[default]
     Rainbow,
     OneColor,
     Pulsing,
     MovingRainbow,
-}
-
-#[derive(Debug)]
-pub enum LightModeState {
-    Rainbow(RainbowParameters),
-    OneColor(RGB8),
-    Pulsing(PulseParameters),
-    MovingRainbow(MovingRainbowParameters),
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct MovingRainbowParameters {
-    current_start_hue: u8,
-    current_ticks: u32,
-    ms_per_hue_inc: u32,
-}
-impl Default for LightModeState {
-    fn default() -> Self {
-        LightModeState::Rainbow(RainbowParameters::new(
-            DEFAULT_RAINBOW_FREQUENCY_MS,
-            LED_FINE_TICKER_FREQ as u32,
-        ))
-    }
+    Disco,
 }
 
 #[derive(Debug, Default)]
-pub enum Lightstrip {
+pub enum Mode {
     #[default]
     Off,
-    On {
-        mode: LightModeState,
-        brightness: u8,
-    },
+    On(LightMode),
 }
 
-#[derive(Debug)]
-pub struct LedState {
-    current_brightness: u8,
-    current_rainbow_parameters: RainbowParameters,
-    current_pulse_parameters: PulseParameters,
-    current_one_color: RGB8,
-    current_moving_rainbow_parameters: MovingRainbowParameters,
+pub struct Ledstrip {
+    mode: Mode,
+    led_was_switched_in_cycle: bool,
+    color_was_changed_in_cycle: bool,
+    brightness: u8,
+    color_index: usize,
+    rainbow_parameters: led::rainbow::Params,
+    pulse_parameters: led::pulse::Params,
+    moving_rainbow_parameters: led::moving_rainbow::Params,
+    disco_params: led::disco::Params,
 }
 
-impl Default for LedState {
+impl Default for Ledstrip {
     fn default() -> Self {
-        let current_one_color = colors::CRIMSON;
         Self {
-            current_brightness: DEFAULT_BRIGHTNESS,
-            current_rainbow_parameters: RainbowParameters::new(
-                DEFAULT_RAINBOW_FREQUENCY_MS,
+            mode: Mode::Off,
+            color_index: 0,
+            led_was_switched_in_cycle: false,
+            color_was_changed_in_cycle: false,
+            brightness: DEFAULT_BRIGHTNESS,
+            rainbow_parameters: led::rainbow::Params::new(
+                led::rainbow::DEFAULT_FREQUENCY_MS,
                 LED_FINE_TICKER_FREQ as u32,
             ),
-            current_pulse_parameters: PulseParameters::new(
-                current_one_color,
-                DEFAULT_PULSE_FREQUENCY_MS,
-                LED_FINE_TICKER_FREQ as u32,
-            ),
-            current_moving_rainbow_parameters: MovingRainbowParameters {
-                current_start_hue: 0,
-                current_ticks: 0,
-                ms_per_hue_inc: FULL_MOVING_RAINBOW_CYCLE_FREQUENCY_MS / 255,
-            },
-            current_one_color,
+            pulse_parameters: led::pulse::Params::new(led::pulse::DEFAULT_FREQUENCY_MS),
+            moving_rainbow_parameters: led::moving_rainbow::Params::default(),
+            disco_params: Default::default(),
         }
     }
 }
+
+impl Ledstrip {
+    fn all_commands_were_handled(&mut self) {
+        self.led_was_switched_in_cycle = false;
+        self.color_was_changed_in_cycle = false;
+    }
+
+    fn handle_led_cmd(&mut self, led_cmd: LedCmd, switch_pin: &mut Output<'static>) {
+        match led_cmd {
+            LedCmd::Switch => match self.mode {
+                Mode::Off => {
+                    // We only allow one switch per cycle.
+                    if !self.led_was_switched_in_cycle {
+                        switch_pin.set_high();
+                        self.mode = Mode::On(LightMode::default());
+                        self.led_was_switched_in_cycle = true;
+                        info!("switching lightstrip on");
+                    }
+                }
+                Mode::On { .. } => {
+                    if !self.led_was_switched_in_cycle {
+                        switch_pin.set_low();
+                        self.mode = Mode::Off;
+                        self.led_was_switched_in_cycle = true;
+                        info!("switching lightstrip off");
+                    }
+                }
+            },
+            LedCmd::SelectMode(light_mode_cmd) => match light_mode_cmd {
+                LightMode::Rainbow => {
+                    info!("rainbow mode");
+                    self.mode = Mode::On(LightMode::Rainbow);
+                }
+                LightMode::OneColor => {
+                    info!("one color");
+                    self.mode = Mode::On(LightMode::OneColor);
+                }
+                LightMode::Pulsing => {
+                    info!("pulse mode");
+                    self.mode = Mode::On(LightMode::Pulsing);
+                }
+                LightMode::MovingRainbow => {
+                    info!("moving rainbow");
+                    self.mode = Mode::On(LightMode::MovingRainbow);
+                }
+                LightMode::Disco => {
+                    info!("disco");
+                    self.mode = Mode::On(LightMode::Disco);
+                }
+            },
+            LedCmd::IncreaseBrightness => {
+                info!("increasing brightness");
+                self.brightness = self.brightness.saturating_add(10);
+                info!(
+                    "current brightness: {} %",
+                    (self.brightness as f32 / 255_f32) * 100.0
+                );
+            }
+            LedCmd::DecreaseBrightness => {
+                info!("decreasing brightness");
+                self.brightness = self.brightness.saturating_sub(10);
+                info!(
+                    "current brightness: {} %",
+                    (self.brightness as f32 / 255_f32) * 100.0
+                );
+            }
+            LedCmd::IncreaseSpeed => {
+                info!("increasing speed");
+                let current_freq = match self.mode {
+                    Mode::On(LightMode::Rainbow) => {
+                        self.rainbow_parameters.increase_speed();
+                        self.rainbow_parameters.current_freq_ms()
+                    }
+                    Mode::On(LightMode::MovingRainbow) => {
+                        self.moving_rainbow_parameters.increase_speed();
+                        self.moving_rainbow_parameters.current_freq_ms()
+                    }
+                    Mode::On(LightMode::Disco) => {
+                        self.disco_params.increase_speed();
+                        self.disco_params.current_freq_ms()
+                    }
+                    Mode::On(LightMode::Pulsing) => {
+                        self.pulse_parameters.increase_speed();
+                        self.pulse_parameters.current_freq_ms()
+                    }
+                    _ => {
+                        info!("speed increase not supported for current mode");
+                        0
+                    }
+                };
+                if current_freq > 0 {
+                    info!("current frequency: {} ms", current_freq);
+                }
+            }
+            LedCmd::DecreaseSpeed => {
+                info!("decreasing speed");
+
+                let current_freq = match self.mode {
+                    Mode::On(LightMode::Rainbow) => {
+                        self.rainbow_parameters.decrease_speed();
+                        self.rainbow_parameters.current_freq_ms()
+                    }
+                    Mode::On(LightMode::MovingRainbow) => {
+                        self.moving_rainbow_parameters.decrease_speed();
+                        self.moving_rainbow_parameters.current_freq_ms()
+                    }
+                    Mode::On(LightMode::Disco) => {
+                        self.disco_params.decrease_speed();
+                        self.disco_params.current_freq_ms()
+                    }
+                    Mode::On(LightMode::Pulsing) => {
+                        self.pulse_parameters.decrease_speed();
+                        self.pulse_parameters.current_freq_ms()
+                    }
+                    _ => {
+                        info!("speed decrease not supported for current mode");
+                        0
+                    }
+                };
+
+                if current_freq > 0 {
+                    info!("current frequency: {} ms", current_freq);
+                }
+            }
+            LedCmd::PrevColor => {
+                if self.color_was_changed_in_cycle {
+                    return;
+                }
+                if self.color_index == 0 {
+                    self.color_index = COLOR_SET.len() - 1;
+                } else {
+                    self.color_index -= 1;
+                }
+                self.color_was_changed_in_cycle = true;
+            }
+            LedCmd::NextColor => {
+                if self.color_was_changed_in_cycle {
+                    return;
+                }
+                if self.color_index == COLOR_SET.len() - 1 {
+                    self.color_index = 0;
+                } else {
+                    self.color_index += 1;
+                }
+                self.color_was_changed_in_cycle = true;
+            }
+        }
+    }
+}
+
 #[embassy_executor::task]
 async fn led_task(
     rmt: Rmt<'static, Async>,
+    mut rng: Rng,
     led_pin: Output<'static>,
     mut switch_pin: Output<'static>,
 ) {
     let rmt_buffer = [0u32; esp_hal_smartled::asynch::buffer_size(BED_LIGHTSTRIPS_LEDS)];
-    let state = LedState::default();
+    let mut ledstrip = Ledstrip::default();
     let receiver = LED_CHANNEL.receiver();
     // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
     // be used directly with all `smart_led` implementations
@@ -320,66 +524,85 @@ async fn led_task(
         sat: 255,
         val: 255,
     };
-    let mut lightstrip = Lightstrip::Off;
     loop {
-        if let Ok(led_cmd) = receiver.try_receive() {
-            handle_led_cmd(led_cmd, &mut lightstrip, &state, &mut switch_pin);
+        while let Ok(led_cmd) = receiver.try_receive() {
+            ledstrip.handle_led_cmd(led_cmd, &mut switch_pin);
         }
-        match &mut lightstrip {
-            Lightstrip::Off => {
+        ledstrip.all_commands_were_handled();
+        match &mut ledstrip.mode {
+            Mode::Off => {
                 ticker.next().await;
             }
-            Lightstrip::On {
-                mode,
-                brightness: current_brightness,
-            } => {
+            Mode::On(mode) => {
                 match mode {
-                    LightModeState::Pulsing(pulse_params) => {
-                        data = [pulse_params.color; BED_LIGHTSTRIPS_LEDS];
+                    LightMode::Pulsing => {
+                        data = [COLOR_SET[ledstrip.color_index]; BED_LIGHTSTRIPS_LEDS];
                         for _ in 0..=divisor {
                             led_helper
                                 .write(brightness(
                                     gamma(data.iter().cloned()),
-                                    pulse_params.brightness_for_pulse(),
+                                    ledstrip.pulse_parameters.brightness_for_pulse(),
                                 ))
                                 .await
                                 .unwrap();
-                            pulse_params.increment();
+                            ledstrip.pulse_parameters.increment();
                             fine_ticker.next().await;
                         }
                     }
-                    LightModeState::OneColor(rgb) => {
-                        data = [*rgb; BED_LIGHTSTRIPS_LEDS];
+                    LightMode::OneColor => {
+                        data = [COLOR_SET[ledstrip.color_index]; BED_LIGHTSTRIPS_LEDS];
                         led_helper
-                            .write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                            .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
                             .await
                             .unwrap();
                         ticker.next().await;
                     }
-                    LightModeState::Rainbow(rainbow_params) => {
+                    LightMode::Rainbow => {
                         // Iterate over the rainbow!
                         for _ in 0..=divisor {
-                            color.hue = rainbow_params.hue();
+                            color.hue = ledstrip.rainbow_parameters.hue();
                             // Convert from the HSV color space (where we can easily transition from one
                             // color to the other) to the RGB color space that we can then send to the LED
                             data = [hsv2rgb(color); BED_LIGHTSTRIPS_LEDS];
                             // When sending to the LED, we do a gamma correction first (see smart_leds
                             // documentation for details).
                             led_helper
-                                .write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                                .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
                                 .await
                                 .unwrap();
-                            rainbow_params.increment();
+                            ledstrip.rainbow_parameters.increment();
                             fine_ticker.next().await;
                         }
                     }
-                    LightModeState::MovingRainbow(params) => {
+                    LightMode::Disco => {
+                        let now = time::now();
+                        if (now - ledstrip.disco_params.last_randomization).to_millis()
+                            > ledstrip.disco_params.frequency_ms.current as u64
+                        {
+                            for next_rgb in data.iter_mut() {
+                                color.hue =
+                                    roundf((rng.random() as f32 / u32::MAX as f32) * 255.0) as u8;
+                                *next_rgb = hsv2rgb(color);
+                            }
+                            led_helper
+                                .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
+                                .await
+                                .unwrap();
+                            ledstrip.disco_params.last_randomization = now;
+                        }
+                        fine_ticker.next().await;
+                    }
+                    LightMode::MovingRainbow => {
                         for _ in 0..=divisor {
                             for (idx, next_rgb) in data.iter_mut().enumerate() {
                                 if idx == 0 {
-                                    color.hue = params.current_start_hue;
+                                    color.hue =
+                                        ledstrip.moving_rainbow_parameters.current_start_hue;
                                 } else {
-                                    color.hue = (params.current_start_hue as u16
+                                    color.hue = (ledstrip
+                                        .moving_rainbow_parameters
+                                        .current_start_hue
+                                        as u16
                                         + floorf(idx as f32 / BED_LIGHTSTRIPS_LEDS as f32 * 255.0)
                                             as u16
                                             % 255)
@@ -390,25 +613,27 @@ async fn led_task(
                             // Convert from the HSV color space (where we can easily transition from one
                             // color to the other) to the RGB color space that we can then send to the LED
                             led_helper
-                                .write(brightness(gamma(data.iter().cloned()), *current_brightness))
+                                .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
                                 .await
                                 .unwrap();
 
-                            if params.ms_per_hue_inc > LED_FINE_TICKER_FREQ as u32 {
-                                // Need to skip increments
-                                let skips_needed = roundf(
-                                    params.ms_per_hue_inc as f32 / LED_FINE_TICKER_FREQ as f32,
-                                ) as u32;
-                                // Only update the hue after skipping `skips_needed` ticks
-                                if params.current_ticks % skips_needed == 0 {
-                                    params.current_start_hue += 1;
+                            if ledstrip.moving_rainbow_parameters.ms_per_hue_inc
+                                > LED_FINE_TICKER_FREQ as u32
+                            {
+                                let now = time::now();
+                                if (now - ledstrip.moving_rainbow_parameters.last_hue_increment)
+                                    .to_millis()
+                                    > ledstrip.moving_rainbow_parameters.ms_per_hue_inc as u64
+                                {
+                                    ledstrip.moving_rainbow_parameters.current_start_hue += 1;
+                                    ledstrip.moving_rainbow_parameters.last_hue_increment = now;
                                 }
-                                params.current_ticks += 1;
                             } else {
                                 // Might need to increment more than 1 hue
-                                params.current_start_hue +=
-                                    ((LED_FINE_TICKER_FREQ as u32 / params.ms_per_hue_inc) % 255)
-                                        as u8;
+                                ledstrip.moving_rainbow_parameters.current_start_hue +=
+                                    ((LED_FINE_TICKER_FREQ as u32
+                                        / ledstrip.moving_rainbow_parameters.ms_per_hue_inc)
+                                        % 255) as u8;
                             }
                             fine_ticker.next().await;
                         }
@@ -416,148 +641,5 @@ async fn led_task(
                 }
             }
         }
-    }
-}
-
-fn handle_led_cmd(
-    led_cmd: LedCmd,
-    lightstrip: &mut Lightstrip,
-    state: &LedState,
-    switch_pin: &mut Output<'static>,
-) {
-    match led_cmd {
-        LedCmd::Switch => match lightstrip {
-            Lightstrip::Off => {
-                switch_pin.set_high();
-                *lightstrip = Lightstrip::On {
-                    mode: LightModeState::default(),
-                    brightness: DEFAULT_BRIGHTNESS,
-                };
-                info!("switching lightstrip on");
-            }
-            Lightstrip::On { .. } => {
-                switch_pin.set_low();
-                *lightstrip = Lightstrip::Off;
-                info!("switching lightstrip off");
-            }
-        },
-        LedCmd::SelectMode(light_mode_cmd) => match light_mode_cmd {
-            LightModeCommand::Rainbow => {
-                info!("rainbow mode");
-                *lightstrip = Lightstrip::On {
-                    mode: LightModeState::Rainbow(state.current_rainbow_parameters),
-                    brightness: state.current_brightness,
-                };
-            }
-            LightModeCommand::OneColor => {
-                info!("one color");
-                *lightstrip = Lightstrip::On {
-                    mode: LightModeState::OneColor(state.current_one_color),
-                    brightness: state.current_brightness,
-                };
-            }
-            LightModeCommand::Pulsing => {
-                info!("pulse mode");
-                *lightstrip = Lightstrip::On {
-                    mode: LightModeState::Pulsing(state.current_pulse_parameters),
-                    brightness: state.current_brightness,
-                };
-            }
-            LightModeCommand::MovingRainbow => {
-                info!("moving rainbow");
-                *lightstrip = Lightstrip::On {
-                    mode: LightModeState::MovingRainbow(state.current_moving_rainbow_parameters),
-                    brightness: state.current_brightness,
-                };
-            }
-        },
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct Scaling {
-    current_ticks: u32,
-    total_ticks: u32,
-}
-
-impl Scaling {
-    pub fn new(frequency_ms: u32, fine_ticks_ms: u32) -> Self {
-        Self {
-            current_ticks: 0,
-            total_ticks: Self::total_ticks_for_pulse_frequency(frequency_ms, fine_ticks_ms),
-        }
-    }
-
-    pub fn update_frequency(&mut self, frequency_ms: u32, fine_ticks_ms: u32) {
-        self.total_ticks = Self::total_ticks_for_pulse_frequency(frequency_ms, fine_ticks_ms);
-    }
-
-    pub fn increment(&mut self) {
-        self.current_ticks += 1;
-        if self.current_ticks >= self.total_ticks {
-            self.current_ticks = 0;
-        }
-    }
-
-    pub fn total_ticks_for_pulse_frequency(frequency_ms: u32, fine_ticks_ms: u32) -> u32 {
-        frequency_ms / fine_ticks_ms
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct PulseParameters {
-    scaling: Scaling,
-    color: RGB8,
-}
-
-impl PulseParameters {
-    pub fn new(color: RGB8, frequency_ms: u32, fine_ticks_ms: u32) -> Self {
-        Self {
-            scaling: Scaling::new(frequency_ms, fine_ticks_ms),
-            color,
-        }
-    }
-
-    pub fn increment(&mut self) {
-        self.scaling.increment();
-    }
-
-    pub fn brightness_for_pulse(&self) -> u8 {
-        const BASE_OFFSET: f32 = 10.0;
-        if self.scaling.current_ticks < self.scaling.total_ticks / 2 {
-            (BASE_OFFSET
-                + floorf(
-                    (self.scaling.current_ticks as f32 / (self.scaling.total_ticks / 2) as f32)
-                        * (255.0 - BASE_OFFSET),
-                )) as u8
-        } else {
-            let ticks_in_fall = self.scaling.current_ticks - self.scaling.total_ticks / 2;
-            (BASE_OFFSET
-                + floorf(
-                    (1.0 - ticks_in_fall as f32 / (self.scaling.total_ticks / 2) as f32)
-                        * (255.0 - BASE_OFFSET),
-                )) as u8
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct RainbowParameters {
-    scaling: Scaling,
-}
-
-impl RainbowParameters {
-    pub fn new(frequency_ms: u32, fine_ticks_ms: u32) -> Self {
-        Self {
-            scaling: Scaling::new(frequency_ms, fine_ticks_ms),
-        }
-    }
-
-    pub fn hue(&self) -> u8 {
-        floorf(self.scaling.current_ticks as f32 / self.scaling.total_ticks as f32 * 255.0) as u8
-    }
-
-    pub fn increment(&mut self) {
-        self.scaling.increment();
     }
 }

@@ -18,8 +18,8 @@ Neopixel lightstrip control with an IR receiver and a relay.
 
 - VOL+ : Increase brightness
 - VOL- : Decrease brightness
-- UP: Increase frequency
-- DOWN: Decrease frequency
-- Left: Change color 
-- Right: Change color 
+- UP: Increase speed
+- DOWN: Decrease speed
+- Left: Previous color 
+- Right: Next color 
 - Play/Pause: Freeze current LED state

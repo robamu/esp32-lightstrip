@@ -1,11 +1,8 @@
 #![no_std]
 #![no_main]
+mod ir;
 mod led;
 
-use core::cell::Cell;
-use core::cell::RefCell;
-
-use critical_section::Mutex;
 use defmt::println;
 use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
@@ -18,7 +15,6 @@ use esp_hal::gpio;
 use esp_hal::rmt::Rmt;
 use esp_hal::rng::Rng;
 use esp_hal::time;
-use esp_hal::time::Instant;
 use esp_hal::Async;
 use esp_hal::{
     gpio::{Input, Io, Level, Output, Pull},
@@ -26,14 +22,19 @@ use esp_hal::{
     timer::timg,
 };
 use esp_println as _;
-use infrared::protocol::nec::NecCommand;
-use infrared::receiver::time::InfraMonotonic;
-use infrared::remotecontrol::{self, Action, RemoteControlModel};
-use infrared::{protocol::Nec, receiver, Receiver};
+use infrared::receiver;
+use infrared::remotecontrol::Action;
+use ir::ElegooRemote;
+use ir::IrMessage;
+use ir::IrReceiver;
+use ir::IR_CHANNEL;
+use ir::IR_PIN;
+use ir::IR_RECEIVER;
+use ir::LAST_IR_EVENT;
 use led::AdjustableSpeed;
 use libm::floorf;
 use libm::roundf;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use smart_leds::colors;
 use smart_leds::{
     brightness, gamma,
@@ -45,20 +46,11 @@ const LED_CMD_CHECK_FREQ_MS: u64 = 200;
 const LED_FINE_TICKER_FREQ: u64 = 20;
 
 const BED_LIGHTSTRIPS_LEDS: usize = 46;
-const IR_CMD_CHANNEL_DEPTH: usize = 12;
 const DEFAULT_BRIGHTNESS: u8 = 80;
 
-type IrReceiver = Receiver<Nec, DummyPin, time::Instant, remotecontrol::Button<ElegooRemote>>;
-type ChannelPayload = remotecontrol::Button<ElegooRemote>;
-static IR_CHANNEL: Channel<CriticalSectionRawMutex, ChannelPayload, IR_CMD_CHANNEL_DEPTH> =
+const LED_CMD_CHANNEL_DEPTH: usize = 24;
+static LED_CHANNEL: Channel<CriticalSectionRawMutex, LedCmd, LED_CMD_CHANNEL_DEPTH> =
     Channel::new();
-static IR_PIN: Mutex<RefCell<Option<Input<'static>>>> = Mutex::new(RefCell::new(None));
-static IR_RECEIVER: Mutex<RefCell<Option<IrReceiver>>> = Mutex::new(RefCell::new(None));
-static LED_CHANNEL: Channel<CriticalSectionRawMutex, LedCmd, IR_CMD_CHANNEL_DEPTH> = Channel::new();
-static LAST_IR_EVENT: Mutex<Cell<Instant>> = Mutex::new(Cell::new(Instant::ZERO_INSTANT));
-
-#[derive(Debug, Default, Copy, Clone, defmt::Format)]
-pub struct ElegooRemote {}
 
 const COLOR_SET: [RGB8; 14] = [
     colors::WHITE,
@@ -76,37 +68,6 @@ const COLOR_SET: [RGB8; 14] = [
     colors::GREEN,
     colors::YELLOW_GREEN,
 ];
-
-impl RemoteControlModel for ElegooRemote {
-    type Cmd = NecCommand;
-    const PROTOCOL: infrared::ProtocolId = infrared::ProtocolId::Nec;
-    const ADDRESS: u32 = 0;
-    const MODEL: &'static str = "Elegoo Remote";
-
-    const BUTTONS: &'static [(u32, Action)] = &[
-        (69, Action::Power),
-        (70, Action::VolumeUp),
-        (71, Action::Stop),
-        (68, Action::Left),
-        (64, Action::Play),
-        (67, Action::Right),
-        (7, Action::Down),
-        (21, Action::VolumeDown),
-        (9, Action::Up),
-        (22, Action::Zero),
-        (25, Action::Eq),
-        (13, Action::Repeat),
-        (12, Action::One),
-        (24, Action::Two),
-        (94, Action::Three),
-        (8, Action::Four),
-        (28, Action::Five),
-        (90, Action::Six),
-        (66, Action::Seven),
-        (82, Action::Eight),
-        (74, Action::Nine),
-    ];
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LedCmd {
@@ -152,7 +113,7 @@ async fn main(spawner: Spawner) {
     let receiver: IrReceiver = receiver::Builder::default()
         .nec()
         .monotonic::<time::Instant>()
-        .frequency(36_000)
+        .frequency(38_000)
         .pin(DummyPin::new_low())
         .remotecontrol(ElegooRemote {})
         .build();
@@ -170,11 +131,18 @@ async fn main(spawner: Spawner) {
     let mut nec_cmd_received;
     loop {
         nec_cmd_received = false;
-        if let Ok(cmd) = IR_CHANNEL.receiver().try_receive() {
-            debug!("received NEC command: {:?}", cmd);
-            nec_cmd_received = true;
-            if let Some(button) = cmd.action() {
-                handle_nec_cmd(button, cmd.is_repeat());
+        if let Ok(msg) = IR_CHANNEL.receiver().try_receive() {
+            match msg {
+                IrMessage::DecodeError(decoding_error) => {
+                    warn!("IR decoding error: {:?}", decoding_error);
+                }
+                IrMessage::Command(cmd) => {
+                    debug!("received NEC command: {:?}", cmd);
+                    nec_cmd_received = true;
+                    if let Some(button) = cmd.action() {
+                        handle_nec_cmd(button, cmd.is_repeat());
+                    }
+                }
             }
         }
         if !nec_cmd_received {
@@ -286,7 +254,7 @@ fn gpio_irq_handler() {
                 .event_edge(elapsed, ir_pin.is_low().unwrap())
             {
                 Ok(Some(cmd)) => {
-                    if let Err(_e) = IR_CHANNEL.try_send(cmd) {
+                    if let Err(_e) = IR_CHANNEL.try_send(cmd.into()) {
                         ir_channel_full = true;
                     }
                 }
@@ -297,10 +265,10 @@ fn gpio_irq_handler() {
         }
     });
     if ir_channel_full {
-        warn!("IR command channel is full");
+        error!("IR command channel is full");
     }
-    if nec_error.is_some() {
-        warn!("NEC error: {:?}", nec_error.unwrap());
+    if let Some(nec_error) = nec_error {
+        IR_CHANNEL.sender().try_send(nec_error.into()).ok();
     }
 }
 
@@ -575,22 +543,28 @@ async fn led_task(
                         }
                     }
                     LightMode::Disco => {
-                        let now = time::now();
-                        if (now - ledstrip.disco_params.last_randomization).to_millis()
-                            > ledstrip.disco_params.frequency_ms.current as u64
-                        {
-                            for next_rgb in data.iter_mut() {
-                                color.hue =
-                                    roundf((rng.random() as f32 / u32::MAX as f32) * 255.0) as u8;
-                                *next_rgb = hsv2rgb(color);
+                        for _ in 0..=divisor {
+                            let now = time::now();
+                            if (now - ledstrip.disco_params.last_randomization).to_millis()
+                                > ledstrip.disco_params.frequency_ms.current as u64
+                            {
+                                for next_rgb in data.iter_mut() {
+                                    color.hue =
+                                        roundf((rng.random() as f32 / u32::MAX as f32) * 255.0)
+                                            as u8;
+                                    *next_rgb = hsv2rgb(color);
+                                }
+                                led_helper
+                                    .write(brightness(
+                                        gamma(data.iter().cloned()),
+                                        ledstrip.brightness,
+                                    ))
+                                    .await
+                                    .unwrap();
+                                ledstrip.disco_params.last_randomization = now;
                             }
-                            led_helper
-                                .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
-                                .await
-                                .unwrap();
-                            ledstrip.disco_params.last_randomization = now;
+                            fine_ticker.next().await;
                         }
-                        fine_ticker.next().await;
                     }
                     LightMode::MovingRainbow => {
                         for _ in 0..=divisor {

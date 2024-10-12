@@ -58,6 +58,7 @@ impl Scaling {
     pub fn update_frequency(&mut self, frequency_ms: u32) {
         self.total_ticks =
             Self::total_ticks_for_pulse_frequency(frequency_ms, LED_FINE_TICKER_FREQ as u32);
+        self.current_ticks = 0;
     }
 
     pub fn increment(&mut self) {
@@ -142,7 +143,7 @@ pub mod pulse {
 }
 
 pub mod rainbow {
-    use libm::floorf;
+    use libm::roundf;
 
     use super::*;
 
@@ -172,7 +173,7 @@ pub mod rainbow {
         }
 
         pub fn hue(&self) -> u8 {
-            floorf(self.scaling.current_ticks as f32 / self.scaling.total_ticks as f32 * 255.0)
+            roundf((self.scaling.current_ticks as f32 / self.scaling.total_ticks as f32) * 255.0)
                 as u8
         }
 

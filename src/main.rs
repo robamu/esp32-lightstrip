@@ -293,8 +293,8 @@ fn gpio_irq_handler() {
                 Ok(None) => (),
                 Err(e) => nec_error = Some(e),
             }
+            ir_pin.clear_interrupt();
         }
-        ir_pin.clear_interrupt();
     });
     if ir_channel_full {
         warn!("IR command channel is full");

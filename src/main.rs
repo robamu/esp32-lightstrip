@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-pub mod smart_led_async;
 
 use core::cell::Cell;
 use core::cell::RefCell;
@@ -49,9 +48,6 @@ const DEFAULT_PULSE_FREQUENCY_MS: u32 = 5000;
 const DEFAULT_RAINBOW_FREQUENCY_MS: u32 = 20000;
 const FULL_MOVING_RAINBOW_CYCLE_FREQUENCY_MS: u32 = 10000;
 
-/// Written values for RGB channel and 0 termination.
-const LED_RMT_BUF_LEN: usize = 3 * 8 + 1;
-const RMT_BUF_LEN: usize = BED_LIGHTSTRIPS_LEDS * LED_RMT_BUF_LEN;
 type IrReceiver = Receiver<Nec, DummyPin, time::Instant, remotecontrol::Button<ElegooRemote>>;
 type ChannelPayload = remotecontrol::Button<ElegooRemote>;
 static IR_CHANNEL: Channel<CriticalSectionRawMutex, ChannelPayload, IR_CMD_CHANNEL_DEPTH> =
@@ -308,13 +304,13 @@ async fn led_task(
     led_pin: Output<'static>,
     mut switch_pin: Output<'static>,
 ) {
-    let rmt_buffer = [0u32; RMT_BUF_LEN];
+    let rmt_buffer = [0u32; esp_hal_smartled::asynch::buffer_size(BED_LIGHTSTRIPS_LEDS)];
     let state = LedState::default();
     let receiver = LED_CHANNEL.receiver();
     // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
     // be used directly with all `smart_led` implementations
     let mut led_helper =
-        smart_led_async::SmartLedAdapterAsync::new(rmt.channel0, led_pin, rmt_buffer);
+        esp_hal_smartled::asynch::SmartLedAdapterAsync::new(rmt.channel0, led_pin, rmt_buffer);
     let mut ticker = Ticker::every(embassy_time::Duration::from_millis(LED_CMD_CHECK_FREQ_MS));
     let mut fine_ticker = Ticker::every(embassy_time::Duration::from_millis(LED_FINE_TICKER_FREQ));
     let divisor = LED_CMD_CHECK_FREQ_MS / LED_FINE_TICKER_FREQ;

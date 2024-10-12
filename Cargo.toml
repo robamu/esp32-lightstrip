@@ -42,7 +42,7 @@ features = ["defmt"]
 [dependencies.esp-hal-smartled]
 git = "https://github.com/robamu/esp-hal-community.git"
 branch = "non-blocking-smart-led"
-version = "0.13.1"
+version = "0.14"
 features = ["esp32c6", "defmt"]
 
 [profile.dev]

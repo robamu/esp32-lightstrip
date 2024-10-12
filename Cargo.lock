@@ -481,8 +481,8 @@ dependencies = [
 
 [[package]]
 name = "esp-hal-smartled"
-version = "0.13.1"
-source = "git+https://github.com/robamu/esp-hal-community.git?branch=non-blocking-smart-led#793bcaa092a2241636074402fd948cbb859ee06a"
+version = "0.14.0"
+source = "git+https://github.com/robamu/esp-hal-community.git?branch=non-blocking-smart-led#7eef6429b5e6488a84d35efa632d8601e0e399fd"
 dependencies = [
  "defmt",
  "document-features",

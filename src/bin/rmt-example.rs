@@ -15,7 +15,6 @@ use core::slice::IterMut;
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_hal::digital::OutputPin;
 use esp_backtrace as _;
 use esp_hal::{
     clock::Clocks,
@@ -26,7 +25,7 @@ use esp_hal::{
 };
 use esp_hal_smartled::LedAdapterError;
 use esp_println::println;
-use smart_leds::{colors, hsv::hsv2rgb, RGB8};
+use smart_leds::{colors, RGB8};
 
 const SK68XX_CODE_PERIOD: u32 = 1200;
 const SK68XX_T0H_NS: u32 = 320;

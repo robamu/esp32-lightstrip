@@ -314,7 +314,7 @@ impl Default for Ledstrip {
                 LED_FINE_TICKER_FREQ as u32,
             ),
             pulse_parameters: led::pulse::Params::new(led::pulse::DEFAULT_FREQUENCY_MS),
-            moving_rainbow_parameters: led::moving_rainbow::Params::default(),
+            moving_rainbow_parameters: Default::default(),
             disco_params: Default::default(),
         }
     }
@@ -326,7 +326,12 @@ impl Ledstrip {
         self.color_was_changed_in_cycle = false;
     }
 
-    fn handle_led_cmd(&mut self, led_cmd: LedCmd, switch_pin: &mut Output<'static>) {
+    fn handle_led_cmd(
+        &mut self,
+        led_cmd: LedCmd,
+        switch_pin: &mut Output<'static>,
+        fine_ticker: &mut Ticker,
+    ) {
         match led_cmd {
             LedCmd::Switch => match self.mode {
                 Mode::Off => {
@@ -335,6 +340,7 @@ impl Ledstrip {
                         switch_pin.set_high();
                         self.mode = Mode::On(LightMode::default());
                         self.led_was_switched_in_cycle = true;
+                        fine_ticker.reset();
                         info!("switching lightstrip on");
                     }
                 }
@@ -481,7 +487,7 @@ async fn led_task(
     let receiver = LED_CHANNEL.receiver();
     // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
     // be used directly with all `smart_led` implementations
-    let mut led_helper =
+    let mut led_adapter =
         esp_hal_smartled::asynch::SmartLedAdapterAsync::new(rmt.channel0, led_pin, rmt_buffer);
     let mut ticker = Ticker::every(embassy_time::Duration::from_millis(LED_CMD_CHECK_FREQ_MS));
     let mut fine_ticker = Ticker::every(embassy_time::Duration::from_millis(LED_FINE_TICKER_FREQ));
@@ -494,7 +500,7 @@ async fn led_task(
     };
     loop {
         while let Ok(led_cmd) = receiver.try_receive() {
-            ledstrip.handle_led_cmd(led_cmd, &mut switch_pin);
+            ledstrip.handle_led_cmd(led_cmd, &mut switch_pin, &mut fine_ticker);
         }
         ledstrip.all_commands_were_handled();
         match &mut ledstrip.mode {
@@ -506,7 +512,7 @@ async fn led_task(
                     LightMode::Pulsing => {
                         data = [COLOR_SET[ledstrip.color_index]; BED_LIGHTSTRIPS_LEDS];
                         for _ in 0..=divisor {
-                            led_helper
+                            led_adapter
                                 .write(brightness(
                                     gamma(data.iter().cloned()),
                                     ledstrip.pulse_parameters.brightness_for_pulse(),
@@ -519,7 +525,7 @@ async fn led_task(
                     }
                     LightMode::OneColor => {
                         data = [COLOR_SET[ledstrip.color_index]; BED_LIGHTSTRIPS_LEDS];
-                        led_helper
+                        led_adapter
                             .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
                             .await
                             .unwrap();
@@ -534,7 +540,7 @@ async fn led_task(
                             data = [hsv2rgb(color); BED_LIGHTSTRIPS_LEDS];
                             // When sending to the LED, we do a gamma correction first (see smart_leds
                             // documentation for details).
-                            led_helper
+                            led_adapter
                                 .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
                                 .await
                                 .unwrap();
@@ -554,7 +560,7 @@ async fn led_task(
                                             as u8;
                                     *next_rgb = hsv2rgb(color);
                                 }
-                                led_helper
+                                led_adapter
                                     .write(brightness(
                                         gamma(data.iter().cloned()),
                                         ledstrip.brightness,
@@ -586,7 +592,7 @@ async fn led_task(
                             }
                             // Convert from the HSV color space (where we can easily transition from one
                             // color to the other) to the RGB color space that we can then send to the LED
-                            led_helper
+                            led_adapter
                                 .write(brightness(gamma(data.iter().cloned()), ledstrip.brightness))
                                 .await
                                 .unwrap();

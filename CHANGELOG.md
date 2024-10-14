@@ -1,6 +1,10 @@
 CHANGELOG
 ========
 
+## [v1.0.2]
+
+- Reset the fine ticker properly to avoid weird glitches.
+
 ## [v1.0.1]
 
 - Changed IR receiver frequency from 36 kHz to 38 kHz

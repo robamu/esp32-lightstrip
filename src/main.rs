@@ -353,28 +353,33 @@ impl Ledstrip {
                     }
                 }
             },
-            LedCmd::SelectMode(light_mode_cmd) => match light_mode_cmd {
-                LightMode::Rainbow => {
-                    info!("rainbow mode");
-                    self.mode = Mode::On(LightMode::Rainbow);
+            LedCmd::SelectMode(light_mode_cmd) => {
+                match light_mode_cmd {
+                    LightMode::Rainbow => {
+                        info!("rainbow mode");
+                        self.mode = Mode::On(LightMode::Rainbow);
+                    }
+                    LightMode::OneColor => {
+                        info!("one color");
+                        self.mode = Mode::On(LightMode::OneColor);
+                    }
+                    LightMode::Pulsing => {
+                        info!("pulse mode");
+                        self.mode = Mode::On(LightMode::Pulsing);
+                    }
+                    LightMode::MovingRainbow => {
+                        info!("moving rainbow");
+                        self.mode = Mode::On(LightMode::MovingRainbow);
+                    }
+                    LightMode::Disco => {
+                        info!("disco");
+                        self.mode = Mode::On(LightMode::Disco);
+                    }
                 }
-                LightMode::OneColor => {
-                    info!("one color");
-                    self.mode = Mode::On(LightMode::OneColor);
-                }
-                LightMode::Pulsing => {
-                    info!("pulse mode");
-                    self.mode = Mode::On(LightMode::Pulsing);
-                }
-                LightMode::MovingRainbow => {
-                    info!("moving rainbow");
-                    self.mode = Mode::On(LightMode::MovingRainbow);
-                }
-                LightMode::Disco => {
-                    info!("disco");
-                    self.mode = Mode::On(LightMode::Disco);
-                }
-            },
+                // Always reset the fine ticker when changing modes to avoid weird bugs
+                // when switching from mode which require the fine ticker to modes which do not.
+                fine_ticker.reset();
+            }
             LedCmd::IncreaseBrightness => {
                 info!("increasing brightness");
                 self.brightness = self.brightness.saturating_add(10);

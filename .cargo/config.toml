@@ -18,7 +18,11 @@ rustflags = [
   "-C", "link-arg=-Tdefmt.x",
 ]
 
-target = "riscv32imac-unknown-none-elf"
+# Use this for ESP32-C6
+# target = "riscv32imac-unknown-none-elf"
+
+# Use this for ESP32-C3
+target = "riscv32imc-unknown-none-elf"
 
 [unstable]
 build-std = ["core"]

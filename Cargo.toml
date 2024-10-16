@@ -8,12 +8,11 @@ default-run = "esp32-lightstrip"
 
 [dependencies]
 esp-backtrace = { version = "0.14.0", features = [
-    "esp32c6",
     "exception-handler",
     "panic-handler",
     "defmt"
 ] }
-esp-hal = { version = "0.21.0", features = [ "esp32c6" ] }
+esp-hal = "0.21.0"
 embedded-hal = "1"
 smart-leds = "0.4"
 dummy-pin = "1"
@@ -27,11 +26,11 @@ defmt = "0.3.8"
 
 [dependencies.esp-println]
 version = "0.12.0"
-features = ["esp32c6", "log", "defmt-espflash"]
+features = ["log", "defmt-espflash"]
 
 [dependencies.esp-hal-embassy]
 version = "0.4"
-features = ["esp32c6", "integrated-timers"]
+features = ["integrated-timers"]
 
 [dependencies.infrared]
 version = "0.14"
@@ -43,7 +42,31 @@ features = ["defmt"]
 git = "https://github.com/robamu/esp-hal-community.git"
 branch = "non-blocking-smart-led"
 version = "0.14"
-features = ["esp32c6", "defmt"]
+features = ["defmt"]
+
+[features]
+default = []
+
+bedroom = ["esp32c6"]
+tree = ["esp32c3"]
+
+esp32c6 = [
+  "esp-hal/esp32c6",
+  "esp-println/esp32c6",
+  "esp-hal-embassy/esp32c6",
+  "esp-hal-smartled/esp32c6",
+  "esp-backtrace/esp32c6",
+  "esp-hal/esp32c6"
+]
+esp32c3 = [
+  "esp-hal/esp32c3",
+  "esp-println/esp32c3",
+  "esp-hal-embassy/esp32c3",
+  "esp-hal-smartled/esp32c3",
+  "esp-backtrace/esp32c3",
+  "esp-hal/esp32c3",
+  # "portable-atomic"
+]
 
 [profile.dev]
 # Rust debug is too slow.

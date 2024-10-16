@@ -85,7 +85,7 @@ pub enum LedCmd {
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     println!(
-        "-- ESP32 Lightstrip Application {} --",
+        "-- ESP32 Lightstrip Application v{} --",
         env!("CARGO_PKG_VERSION")
     );
     let peripherals = esp_hal::init(esp_hal::Config::default());
@@ -108,7 +108,7 @@ async fn main(spawner: Spawner) {
     lightstrip_switch.set_drive_strength(esp_hal::gpio::DriveStrength::I40mA);
     lightstrip_switch.set_high();
 
-    let mut ir_input = Input::new(io.pins.gpio3, Pull::Up);
+    let mut ir_input = Input::new(io.pins.gpio2, Pull::Up);
 
     let receiver: IrReceiver = receiver::Builder::default()
         .nec()

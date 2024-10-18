@@ -3,6 +3,9 @@ ESP32 Lightstrip
 
 Neopixel lightstrip control with an IR receiver and a relay.
 
+Depending on which ESP32 is used, a different target might have to be select in
+`.cargo/config.toml`.
+
 ## Setting up Development Environment
 
 - [esp-rs book](https://docs.esp-rs.org/book/)
@@ -23,3 +26,11 @@ Neopixel lightstrip control with an IR receiver and a relay.
 - Left: Previous color 
 - Right: Next color 
 - Play/Pause: Freeze current LED state
+
+## Build for Bedroom
+
+1. `cargo run --features bedroom --release`
+
+## Build for Tree
+
+1. `cargo run --features tree --release`

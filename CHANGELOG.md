@@ -1,6 +1,10 @@
 CHANGELOG
 ========
 
+## [v1.0.3]
+
+- Bugfixes in color logic
+
 ## [v1.0.2]
 
 - Reset the fine ticker properly to avoid weird glitches.

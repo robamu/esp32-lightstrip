@@ -53,7 +53,7 @@ async fn main(spawner: Spawner) {
     rgb_pin.set_low();
 
     let mut lightstrip_switch = Output::new(io.pins.gpio1, Level::Low);
-    lightstrip_switch.set_drive_strength(esp_hal::gpio::DriveStrength::I40mA);
+    lightstrip_switch.set_drive_strength(esp_hal::gpio::DriveStrength::I5mA);
     lightstrip_switch.set_low();
 
     let mut ir_input = Input::new(io.pins.gpio2, Pull::Up);

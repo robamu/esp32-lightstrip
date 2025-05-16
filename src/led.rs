@@ -39,7 +39,7 @@ pub enum LightMode {
     Disco,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     Off,
@@ -575,6 +575,15 @@ pub async fn led_task(
     loop {
         while let Ok(led_cmd) = receiver.try_receive() {
             ledstrip.handle_led_cmd(led_cmd, &mut switch_pin, &mut fine_ticker);
+            if ledstrip.mode == Mode::Off {
+                led_adapter
+                    .write(smart_leds::brightness(
+                        smart_leds::gamma(data.iter().cloned()),
+                        0,
+                    ))
+                    .await
+                    .unwrap();
+            }
         }
         ledstrip.all_commands_were_handled();
         match &mut ledstrip.mode {

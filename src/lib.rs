@@ -1,19 +1,18 @@
 #![no_std]
 
-use esp_hal::{macros::handler, time};
 use infrared::remotecontrol::Action;
-use ir::{IR_CHANNEL, IR_PIN, IR_RECEIVER, LAST_IR_EVENT};
 use led::{LedCmd, LightMode, LED_CHANNEL};
-use log::{error, warn};
 pub mod conf;
 pub mod ir;
 pub mod led;
 
 #[cfg(not(any(feature = "bedroom", feature = "tree")))]
-compile_error!("at least one target feature must be active. Targets:
+compile_error!(
+    "at least one target feature must be active. Targets:
     - bedroom
     - tree
-");
+"
+);
 
 pub fn repeats_should_be_ignored(action: Action) -> bool {
     matches!(
@@ -59,46 +58,9 @@ pub fn handle_nec_cmd(action: Action, is_repeat: bool) {
     }
     let led_cmd_opt = action_to_led_cmd(action);
     if led_cmd_opt.is_none() {
-        warn!("no LED command for action {:?}", action);
+        defmt::warn!("no LED command for action {:?}", action);
         return;
     }
     let led_cmd = led_cmd_opt.unwrap();
     LED_CHANNEL.sender().try_send(led_cmd).unwrap();
-}
-
-#[handler]
-pub fn gpio_irq_handler() {
-    let mut ir_channel_full = false;
-    let mut nec_error = None;
-    critical_section::with(|cs| {
-        let mut ir_pin_borrow = IR_PIN.borrow_ref_mut(cs);
-        let ir_pin = ir_pin_borrow.as_mut().unwrap();
-        if ir_pin.is_interrupt_set() {
-            let current_time = time::now();
-            let last_event_cell = LAST_IR_EVENT.borrow(cs);
-            let elapsed = current_time - last_event_cell.get();
-            last_event_cell.set(current_time);
-            match IR_RECEIVER
-                .borrow_ref_mut(cs)
-                .as_mut()
-                .unwrap()
-                .event_edge(elapsed, ir_pin.is_low())
-            {
-                Ok(Some(cmd)) => {
-                    if let Err(_e) = IR_CHANNEL.try_send(cmd.into()) {
-                        ir_channel_full = true;
-                    }
-                }
-                Ok(None) => (),
-                Err(e) => nec_error = Some(e),
-            }
-            ir_pin.clear_interrupt();
-        }
-    });
-    if ir_channel_full {
-        error!("IR command channel is full");
-    }
-    if let Some(nec_error) = nec_error {
-        IR_CHANNEL.sender().try_send(nec_error.into()).ok();
-    }
 }

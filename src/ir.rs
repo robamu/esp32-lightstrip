@@ -1,34 +1,30 @@
-use core::cell::{Cell, RefCell};
-
-use critical_section::Mutex;
-use dummy_pin::DummyPin;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use esp_hal::{
-    gpio::Input,
-    time::{self, Instant},
+    gpio,
+    rmt::{self, PulseCode, RxChannelAsync as _},
+    Async,
 };
 use infrared::{
     protocol::{nec::NecCommand, Nec},
-    receiver::{time::InfraMonotonic, DecodingError},
+    receiver::{DecodingError, NoPin},
     remotecontrol::{self, Action, RemoteControlModel},
     Receiver,
 };
-
-const IR_CMD_CHANNEL_DEPTH: usize = 24;
 
 #[cfg(feature = "bedroom")]
 pub type Remote = ElegooRemote;
 #[cfg(feature = "tree")]
 pub type Remote = BerrybaseRemote;
 
-pub type RemoteButton = remotecontrol::Button<Remote>;
+const IR_CMD_CHANNEL_DEPTH: usize = 24;
 
-pub type IrReceiver = Receiver<Nec, DummyPin, time::Instant, RemoteButton>;
-pub static IR_CHANNEL: Channel<CriticalSectionRawMutex, IrMessage, IR_CMD_CHANNEL_DEPTH> =
-    Channel::new();
-pub static IR_PIN: Mutex<RefCell<Option<Input<'static>>>> = Mutex::new(RefCell::new(None));
-pub static IR_RECEIVER: Mutex<RefCell<Option<IrReceiver>>> = Mutex::new(RefCell::new(None));
-pub static LAST_IR_EVENT: Mutex<Cell<Instant>> = Mutex::new(Cell::new(Instant::ZERO_INSTANT));
+pub type RemoteButton = remotecontrol::Button<Remote>;
+pub type IrChannelType =
+    embassy_sync::channel::Channel<NoopRawMutex, IrMessage, IR_CMD_CHANNEL_DEPTH>;
+pub static IR_CHANNEL: static_cell::ConstStaticCell<IrChannelType> =
+    static_cell::ConstStaticCell::new(IrChannelType::new());
+
+pub type IrReceiver = Receiver<Nec, NoPin, u32, RemoteButton>;
 
 #[derive(Debug, Default, Copy, Clone, defmt::Format)]
 pub struct ElegooRemote {}
@@ -113,5 +109,67 @@ impl From<DecodingError> for IrMessage {
 impl From<RemoteButton> for IrMessage {
     fn from(e: RemoteButton) -> Self {
         IrMessage::Command(e)
+    }
+}
+
+#[embassy_executor::task]
+pub async fn ir_receive(
+    mut channel: rmt::Channel<Async, 2>,
+    mut ir_receiver: IrReceiver,
+    ir_msg_tx: embassy_sync::channel::Sender<
+        'static,
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        IrMessage,
+        IR_CMD_CHANNEL_DEPTH,
+    >,
+) {
+    let mut data = [u32::new(gpio::Level::High, 1, gpio::Level::Low, 1); 48];
+
+    loop {
+        channel.receive(&mut data).await.unwrap();
+
+        for entry in data {
+            if entry.length1() == 0 {
+                break;
+            }
+
+            let res = ir_receiver.event(
+                entry.length1() as u32 * 255,
+                entry.level1() == gpio::Level::High,
+            );
+
+            if let Err(e) = res {
+                ir_msg_tx.try_send(e.into()).unwrap();
+                break;
+            }
+
+            if let Some(cmd) = res.unwrap() {
+                // execute command
+                defmt::debug!("IR CMD: {:?}", cmd);
+                ir_msg_tx.try_send(cmd.into()).unwrap();
+                break;
+            }
+
+            if entry.length2() == 0 {
+                break;
+            }
+
+            let res = ir_receiver.event(
+                entry.length2() as u32 * 255,
+                entry.level2() == gpio::Level::High,
+            );
+
+            if let Err(e) = res {
+                ir_msg_tx.try_send(e.into()).unwrap();
+                break;
+            }
+
+            if let Some(cmd) = res.unwrap() {
+                // execute command
+                defmt::debug!("IR CMD: {:?}", cmd);
+                ir_msg_tx.try_send(cmd.into()).unwrap();
+                break;
+            }
+        }
     }
 }

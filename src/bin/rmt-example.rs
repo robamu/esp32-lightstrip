@@ -8,9 +8,9 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::Clocks,
-    gpio::{Io, Level, Output},
-    prelude::*,
-    rmt::{asynch::TxChannelAsync, PulseCode, Rmt, TxChannelConfig, TxChannelCreatorAsync},
+    gpio::{self, Io, Level, Output, OutputConfig},
+    rmt::{PulseCode, Rmt, TxChannelAsync, TxChannelConfig, TxChannelCreatorAsync},
+    time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_hal_smartled::LedAdapterError;
@@ -60,46 +60,44 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let _io = Io::new(peripherals.IO_MUX);
 
-    let mut lightstrip_switch = Output::new(io.pins.gpio1, Level::High);
-    lightstrip_switch.set_drive_strength(esp_hal::gpio::DriveStrength::I40mA);
-    lightstrip_switch.set_high();
+    let switch_cfg = OutputConfig::default().with_drive_strength(gpio::DriveStrength::_5mA);
+    let mut lightstrip_switch = Output::new(peripherals.GPIO1, Level::Low, switch_cfg);
+    lightstrip_switch.set_low();
 
-    let rmt = Rmt::new_async(peripherals.RMT, 80.MHz()).unwrap();
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
+        .unwrap()
+        .into_async();
 
+    let channel_config = TxChannelConfig::default()
+        .with_clk_divider(1)
+        .with_idle_output_level(Level::Low)
+        .with_carrier_modulation(false)
+        .with_idle_output(true);
     let mut channel = rmt
         .channel0
-        .configure(
-            io.pins.gpio0,
-            TxChannelConfig {
-                clk_divider: 1,
-                idle_output_level: false,
-                carrier_modulation: false,
-                idle_output: true,
-                ..TxChannelConfig::default()
-            },
-        )
+        .configure(peripherals.GPIO0, channel_config)
         .unwrap();
 
     // Assume the RMT peripheral is set up to use the APB clock
     let clocks = Clocks::get();
-    let src_clock = clocks.apb_clock.to_MHz();
+    let src_clock = clocks.apb_clock.as_mhz();
 
-    let pulse0 = PulseCode {
-        level1: true,
-        length1: ((SK68XX_T0H_NS * src_clock) / 1000) as u16,
-        level2: false,
-        length2: ((SK68XX_T0L_NS * src_clock) / 1000) as u16,
-    };
-    let pulse1 = PulseCode {
-        level1: true,
-        length1: ((SK68XX_T1H_NS * src_clock) / 1000) as u16,
-        level2: false,
-        length2: ((SK68XX_T1L_NS * src_clock) / 1000) as u16,
-    };
+    let pulse0 = u32::new(
+        Level::High,
+        ((SK68XX_T0H_NS * src_clock) / 1000) as u16,
+        Level::Low,
+        ((SK68XX_T0L_NS * src_clock) / 1000) as u16,
+    );
+    let pulse1 = u32::new(
+        Level::High,
+        ((SK68XX_T1H_NS * src_clock) / 1000) as u16,
+        Level::Low,
+        ((SK68XX_T1L_NS * src_clock) / 1000) as u16,
+    );
 
-    let pulses = (u32::from(pulse0), u32::from(pulse1));
+    let pulses = (pulse0, pulse1);
     let data: [RGB8; NUM_LEDS] = [colors::DARK_RED; NUM_LEDS];
     let mut rmt_buffer = [0u32; NUM_LEDS * (24 + 1)];
     let mut rmt_iter = rmt_buffer.iter_mut();

@@ -45,7 +45,7 @@ version = "0.14"
 features = ["defmt"]
 
 [features]
-default = []
+default = ["bedroom"]
 
 bedroom = ["esp32c6"]
 tree = ["esp32c3"]

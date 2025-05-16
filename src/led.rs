@@ -2,7 +2,12 @@
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::Ticker;
-use esp_hal::{gpio::Output, rmt::Rmt, rng::Rng, time, Async};
+use esp_hal::{
+    gpio::{GpioPin, Input, Level, Output, Pull},
+    rmt::Rmt,
+    rng::Rng,
+    time, Async,
+};
 use libm::floorf;
 use log::info;
 use smart_leds::{colors, hsv, RGB8};
@@ -575,7 +580,11 @@ pub async fn led_task(
     loop {
         while let Ok(led_cmd) = receiver.try_receive() {
             ledstrip.handle_led_cmd(led_cmd, &mut switch_pin, &mut fine_ticker);
+
             if ledstrip.mode == Mode::Off {
+                let pin = unsafe { GpioPin::<0>::steal() };
+                Input::new(pin, Pull::None);
+                /*
                 led_adapter
                     .write(smart_leds::brightness(
                         smart_leds::gamma(data.iter().cloned()),
@@ -583,6 +592,10 @@ pub async fn led_task(
                     ))
                     .await
                     .unwrap();
+                */
+            } else {
+                let pin = unsafe { GpioPin::<0>::steal() };
+                Output::new(pin, Level::Low);
             }
         }
         ledstrip.all_commands_were_handled();

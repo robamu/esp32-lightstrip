@@ -10,14 +10,14 @@ use esp32_lightstrip::ir::IrMessage;
 use esp32_lightstrip::ir::IrReceiver;
 use esp32_lightstrip::ir::Remote;
 use esp32_lightstrip::ir::IR_CHANNEL;
+use esp32_lightstrip::ir::IR_HANDLING_FREQ;
 use esp32_lightstrip::ir::IR_PIN;
 use esp32_lightstrip::ir::IR_RECEIVER;
 use esp_backtrace as _;
 use esp_hal::gpio;
-use esp_hal::time;
+use esp_hal::gpio::InputConfig;
 use esp_hal::{
     gpio::{Input, Io, Pull},
-    prelude::*,
     timer::timg,
 };
 use esp_println as _;
@@ -29,18 +29,19 @@ async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut io = Io::new(peripherals.IO_MUX);
     io.set_interrupt_handler(gpio_irq_handler);
 
     let timg0 = timg::TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let mut ir_input = Input::new(io.pins.gpio2, Pull::Up);
+    let input_cfg = InputConfig::default().with_pull(Pull::Up);
+    let mut ir_input = Input::new(peripherals.GPIO2, input_cfg);
 
     let receiver: IrReceiver = receiver::Builder::default()
         .nec()
-        .monotonic::<time::Instant>()
-        .frequency(38_000)
+        .monotonic::<u64>()
+        .frequency(IR_HANDLING_FREQ.as_hz())
         .pin(DummyPin::new_low())
         .remotecontrol(Remote {})
         .build();

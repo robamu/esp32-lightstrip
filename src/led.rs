@@ -2,10 +2,16 @@
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::Ticker;
-use esp_hal::{gpio::Output, rmt::Rmt, rng::Rng, time, Async};
+use esp_hal::{
+    gpio::{AnyPin, Input, InputConfig, Output, OutputConfig},
+    rmt::{ChannelCreator, Rmt},
+    rng::Rng,
+    time::Instant,
+    Async,
+};
 use libm::floorf;
 use log::info;
-use smart_leds::{colors, hsv, RGB8};
+use smart_leds::{colors, hsv, SmartLedsWriteAsync, RGB8};
 
 use crate::conf::{self, LED_CMD_CHANNEL_DEPTH};
 
@@ -160,6 +166,13 @@ impl Default for Ledstrip {
     }
 }
 
+#[derive(Debug)]
+pub enum CmdResult {
+    SwitchToOff,
+    SwitchToOn,
+    Other,
+}
+
 impl Ledstrip {
     fn all_commands_were_handled(&mut self) {
         self.led_was_switched_in_cycle = false;
@@ -171,7 +184,8 @@ impl Ledstrip {
         led_cmd: LedCmd,
         switch_pin: &mut Output<'static>,
         fine_ticker: &mut Ticker,
-    ) {
+    ) -> CmdResult {
+        let mut cmd_result = CmdResult::Other;
         match led_cmd {
             LedCmd::Switch => match self.mode {
                 Mode::Off => {
@@ -182,6 +196,7 @@ impl Ledstrip {
                         self.led_was_switched_in_cycle = true;
                         fine_ticker.reset();
                         info!("switching lightstrip on");
+                        cmd_result = CmdResult::SwitchToOn;
                     }
                 }
                 Mode::On { .. } => {
@@ -190,6 +205,7 @@ impl Ledstrip {
                         self.mode = Mode::Off;
                         self.led_was_switched_in_cycle = true;
                         info!("switching lightstrip off");
+                        cmd_result = CmdResult::SwitchToOff;
                     }
                 }
             },
@@ -295,28 +311,27 @@ impl Ledstrip {
                 }
             }
             LedCmd::PrevColor => {
-                if self.color_was_changed_in_cycle {
-                    return;
+                if !self.color_was_changed_in_cycle {
+                    if self.color_index == 0 {
+                        self.color_index = COLOR_SET.len() - 1;
+                    } else {
+                        self.color_index -= 1;
+                    }
+                    self.color_was_changed_in_cycle = true;
                 }
-                if self.color_index == 0 {
-                    self.color_index = COLOR_SET.len() - 1;
-                } else {
-                    self.color_index -= 1;
-                }
-                self.color_was_changed_in_cycle = true;
             }
             LedCmd::NextColor => {
-                if self.color_was_changed_in_cycle {
-                    return;
+                if !self.color_was_changed_in_cycle {
+                    if self.color_index == COLOR_SET.len() - 1 {
+                        self.color_index = 0;
+                    } else {
+                        self.color_index += 1;
+                    }
+                    self.color_was_changed_in_cycle = true;
                 }
-                if self.color_index == COLOR_SET.len() - 1 {
-                    self.color_index = 0;
-                } else {
-                    self.color_index += 1;
-                }
-                self.color_was_changed_in_cycle = true;
             }
         }
+        cmd_result
     }
 }
 
@@ -447,8 +462,7 @@ pub mod rainbow {
 }
 
 pub mod moving_rainbow {
-    use esp_hal::time;
-    use infrared::receiver::time::InfraMonotonic;
+    use esp_hal::time::{self, Instant};
 
     use super::{AdjustableSpeed, FrequencyParamsMs};
 
@@ -469,7 +483,7 @@ pub mod moving_rainbow {
         fn default() -> Self {
             Self {
                 current_start_hue: Default::default(),
-                last_hue_increment: time::Instant::ZERO_INSTANT,
+                last_hue_increment: Instant::EPOCH,
                 ms_per_hue_inc: (DEFAULT_FREQUENCY_MS / 255),
                 frequency_ms: FrequencyParamsMs::new(
                     DEFAULT_FREQUENCY_MS,
@@ -499,8 +513,7 @@ pub mod moving_rainbow {
 }
 
 pub mod disco {
-    use esp_hal::time;
-    use infrared::receiver::time::InfraMonotonic;
+    use esp_hal::time::{self, Instant};
 
     use super::{AdjustableSpeed, FrequencyParamsMs};
 
@@ -525,7 +538,7 @@ pub mod disco {
                     MAX_FREQ,
                     FREQ_INC_DEC,
                 ),
-                last_randomization: time::Instant::ZERO_INSTANT,
+                last_randomization: Instant::EPOCH,
             }
         }
     }
@@ -552,13 +565,13 @@ pub async fn led_task(
     led_pin: Output<'static>,
     mut switch_pin: Output<'static>,
 ) {
-    let rmt_buffer = [0u32; esp_hal_smartled::asynch::buffer_size(conf::NUM_LEDS)];
+    let rmt_buffer = [0u32; esp_hal_smartled::buffer_size_async(conf::NUM_LEDS)];
     let mut ledstrip = Ledstrip::default();
     let receiver = LED_CHANNEL.receiver();
     // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
     // be used directly with all `smart_led` implementations
     let mut led_adapter =
-        esp_hal_smartled::asynch::SmartLedAdapterAsync::new(rmt.channel0, led_pin, rmt_buffer);
+        esp_hal_smartled::SmartLedsAdapterAsync::new(rmt.channel0, led_pin, rmt_buffer);
     let mut ticker = Ticker::every(embassy_time::Duration::from_millis(
         conf::LED_CMD_CHECK_FREQ_MS,
     ));
@@ -574,15 +587,22 @@ pub async fn led_task(
     };
     loop {
         while let Ok(led_cmd) = receiver.try_receive() {
-            ledstrip.handle_led_cmd(led_cmd, &mut switch_pin, &mut fine_ticker);
-            if ledstrip.mode == Mode::Off {
-                led_adapter
-                    .write(smart_leds::brightness(
-                        smart_leds::gamma(data.iter().cloned()),
-                        0,
-                    ))
-                    .await
-                    .unwrap();
+            match ledstrip.handle_led_cmd(led_cmd, &mut switch_pin, &mut fine_ticker) {
+                CmdResult::SwitchToOff => {
+                    let led_pin = unsafe { AnyPin::steal(0) };
+                    Input::new(led_pin, InputConfig::default());
+                }
+                CmdResult::SwitchToOn => {
+                    let led_pin = unsafe { AnyPin::steal(0) };
+                    let output_pin =
+                        Output::new(led_pin, esp_hal::gpio::Level::Low, OutputConfig::default());
+                    let channel_0 = unsafe { ChannelCreator::<Async, 0>::steal() };
+                    drop(led_adapter);
+                    led_adapter = esp_hal_smartled::SmartLedsAdapterAsync::new(
+                        channel_0, output_pin, rmt_buffer,
+                    );
+                }
+                CmdResult::Other => (),
             }
         }
         ledstrip.all_commands_were_handled();
@@ -639,8 +659,8 @@ pub async fn led_task(
                     }
                     LightMode::Disco => {
                         for _ in 0..=divisor {
-                            let now = time::now();
-                            if (now - ledstrip.disco_params.last_randomization).to_millis()
+                            let now = Instant::now();
+                            if (now - ledstrip.disco_params.last_randomization).as_millis()
                                 > ledstrip.disco_params.frequency_ms.current as u64
                             {
                                 for next_rgb in data.iter_mut() {
@@ -691,9 +711,9 @@ pub async fn led_task(
                             if ledstrip.moving_rainbow_parameters.ms_per_hue_inc
                                 > conf::LED_FINE_TICKER_FREQ as u32
                             {
-                                let now = time::now();
+                                let now = esp_hal::time::Instant::now();
                                 if (now - ledstrip.moving_rainbow_parameters.last_hue_increment)
-                                    .to_millis()
+                                    .as_millis()
                                     > ledstrip.moving_rainbow_parameters.ms_per_hue_inc as u64
                                 {
                                     ledstrip.moving_rainbow_parameters.current_start_hue = ledstrip

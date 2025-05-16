@@ -5,11 +5,11 @@ use dummy_pin::DummyPin;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::{
     gpio::Input,
-    time::{self, Instant},
+    time::{Instant, Rate},
 };
 use infrared::{
     protocol::{nec::NecCommand, Nec},
-    receiver::{time::InfraMonotonic, DecodingError},
+    receiver::DecodingError,
     remotecontrol::{self, Action, RemoteControlModel},
     Receiver,
 };
@@ -23,12 +23,14 @@ pub type Remote = BerrybaseRemote;
 
 pub type RemoteButton = remotecontrol::Button<Remote>;
 
-pub type IrReceiver = Receiver<Nec, DummyPin, time::Instant, RemoteButton>;
+/// 1 us resolution.
+pub const IR_HANDLING_FREQ: Rate = Rate::from_hz(1_000_000);
+pub type IrReceiver = Receiver<Nec, DummyPin, u64, RemoteButton>;
 pub static IR_CHANNEL: Channel<CriticalSectionRawMutex, IrMessage, IR_CMD_CHANNEL_DEPTH> =
     Channel::new();
 pub static IR_PIN: Mutex<RefCell<Option<Input<'static>>>> = Mutex::new(RefCell::new(None));
 pub static IR_RECEIVER: Mutex<RefCell<Option<IrReceiver>>> = Mutex::new(RefCell::new(None));
-pub static LAST_IR_EVENT: Mutex<Cell<Instant>> = Mutex::new(Cell::new(Instant::ZERO_INSTANT));
+pub static LAST_IR_EVENT: Mutex<Cell<Instant>> = Mutex::new(Cell::new(Instant::EPOCH));
 
 #[derive(Debug, Default, Copy, Clone, defmt::Format)]
 pub struct ElegooRemote {}

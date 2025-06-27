@@ -1,6 +1,6 @@
 [package]
 name = "esp32-lightstrip"
-version = "1.0.4"
+version = "1.1.0"
 authors = ["Robin Mueller <robin.mueller.m@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -36,9 +36,6 @@ branch = "embedded-hal1_0"
 features = ["defmt"]
 
 [dependencies.esp-hal-smartled]
-# path = "../esp-hal-community/esp-hal-smartled"
-# git = "https://github.com/robamu/esp-hal-community.git"
-# branch = "non-blocking-smart-led"
 version = "0.15"
 features = ["defmt"]
 
@@ -56,15 +53,6 @@ esp32c6 = [
   "esp-backtrace/esp32c6",
   "esp-hal/esp32c6"
 ]
-# esp32c3 = [
-  # "esp-hal/esp32c3",
-  # "esp-println/esp32c3",
-  # "esp-hal-embassy/esp32c3",
-  # "esp-hal-smartled/esp32c3",
-  # "esp-backtrace/esp32c3",
-  # "esp-hal/esp32c3",
-  # "portable-atomic"
-# ]
 
 [profile.dev]
 # Rust debug is too slow.

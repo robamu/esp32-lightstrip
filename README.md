@@ -27,10 +27,10 @@ Depending on which ESP32 is used, a different target might have to be select in
 - Right: Next color 
 - Play/Pause: Freeze current LED state
 
-## Build for Bedroom
+## Build and Flash for Bedroom
 
 1. `cargo run --features bedroom --release`
 
-## Build for Tree
+## Build and Flash for Tree
 
-1. `cargo run --features tree --release`
+1. `cargo run --features tree --no-default-features --release`

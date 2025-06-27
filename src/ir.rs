@@ -16,9 +16,9 @@ use infrared::{
 
 const IR_CMD_CHANNEL_DEPTH: usize = 24;
 
-#[cfg(feature = "bedroom")]
-pub type Remote = ElegooRemote;
-#[cfg(feature = "tree")]
+// #[cfg(feature = "bedroom")]
+// pub type Remote = ElegooRemote;
+// #[cfg(feature = "tree")]
 pub type Remote = BerrybaseRemote;
 
 pub type RemoteButton = remotecontrol::Button<Remote>;

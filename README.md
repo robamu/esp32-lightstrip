@@ -1,7 +1,7 @@
 ESP32 Lightstrip
 =========
 
-Neopixel lightstrip control with an IR receiver and a relay.
+Neopixel lightstrip control with an IR receiver and a MOSFET based power switch.
 
 Depending on which ESP32 is used, a different target might have to be select in
 `.cargo/config.toml`.

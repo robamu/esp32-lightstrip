@@ -1,6 +1,13 @@
 CHANGELOG
 ========
 
+## [v1.1.0]
+
+- Both tree and bedroom are now esp32c6 based
+- Updated software for new PCB
+- Introduce changes to avoid phantom currents through lightstrip data pin
+- Updated all dependencies 
+
 ## [v1.0.3]
 
 - Bugfixes in color logic

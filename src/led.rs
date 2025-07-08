@@ -10,7 +10,7 @@ use esp_hal::{
     Async,
 };
 use libm::floorf;
-use log::info;
+use defmt::info;
 use smart_leds::{colors, hsv, SmartLedsWriteAsync, RGB8};
 
 use crate::conf::{self, LED_CMD_CHANNEL_DEPTH};
@@ -135,6 +135,13 @@ impl Scaling {
     }
 }
 
+#[derive(Debug)]
+pub enum CmdResult {
+    SwitchToOff,
+    SwitchToOn,
+    Other,
+}
+
 pub struct Ledstrip {
     mode: Mode,
     led_was_switched_in_cycle: bool,
@@ -164,13 +171,6 @@ impl Default for Ledstrip {
             disco_params: Default::default(),
         }
     }
-}
-
-#[derive(Debug)]
-pub enum CmdResult {
-    SwitchToOff,
-    SwitchToOn,
-    Other,
 }
 
 impl Ledstrip {

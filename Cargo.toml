@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 default-run = "esp32-lightstrip"
 
 [dependencies]
-esp-backtrace = { version = "0.14.0", features = [
+esp-backtrace = { version = "0.16.0", features = [
     "exception-handler",
     "panic-handler",
     "defmt"
@@ -26,8 +26,8 @@ libm = "0.2"
 defmt = "0.3.8"
 
 [dependencies.esp-println]
-version = "0.12.0"
-features = ["log", "defmt-espflash"]
+version = "0.14.0"
+features = ["defmt-espflash"]
 
 [dependencies.infrared]
 version = "0.14"

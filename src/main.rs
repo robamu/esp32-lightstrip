@@ -1,9 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::println;
-use defmt::warn;
-use dummy_pin::DummyPin;
+use defmt::{println, warn};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp32_lightstrip::gpio_irq_handler;
@@ -21,13 +19,11 @@ use esp_hal::{
     gpio::{Input, Io, Level, Output, Pull},
     timer::timg,
 };
-use esp_println as _;
 use infrared::receiver;
 use log::debug;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    esp_println::logger::init_logger_from_env();
     println!(
         "-- ESP32 Lightstrip Application v{} --",
         env!("CARGO_PKG_VERSION")
@@ -60,7 +56,6 @@ async fn main(spawner: Spawner) {
         .nec()
         .monotonic::<u64>()
         .frequency(ir::IR_HANDLING_FREQ.as_hz())
-        .pin(DummyPin::new_low())
         .remotecontrol(ir::Remote {})
         .build();
 

@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 use defmt::warn;
-use dummy_pin::DummyPin;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp32_lightstrip::gpio_irq_handler;
@@ -26,7 +25,6 @@ use log::info;
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    esp_println::logger::init_logger_from_env();
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let mut io = Io::new(peripherals.IO_MUX);
@@ -42,7 +40,6 @@ async fn main(_spawner: Spawner) {
         .nec()
         .monotonic::<u64>()
         .frequency(IR_HANDLING_FREQ.as_hz())
-        .pin(DummyPin::new_low())
         .remotecontrol(Remote {})
         .build();
 

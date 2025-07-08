@@ -1,7 +1,6 @@
 use core::cell::{Cell, RefCell};
 
 use critical_section::Mutex;
-use dummy_pin::DummyPin;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::{
     gpio::Input,
@@ -16,16 +15,13 @@ use infrared::{
 
 const IR_CMD_CHANNEL_DEPTH: usize = 24;
 
-// #[cfg(feature = "bedroom")]
-// pub type Remote = ElegooRemote;
-// #[cfg(feature = "tree")]
 pub type Remote = BerrybaseRemote;
 
 pub type RemoteButton = remotecontrol::Button<Remote>;
 
 /// 1 us resolution.
 pub const IR_HANDLING_FREQ: Rate = Rate::from_hz(1_000_000);
-pub type IrReceiver = Receiver<Nec, DummyPin, u64, RemoteButton>;
+pub type IrReceiver = Receiver<Nec, infrared::receiver::NoPin, u64, RemoteButton>;
 pub static IR_CHANNEL: Channel<CriticalSectionRawMutex, IrMessage, IR_CMD_CHANNEL_DEPTH> =
     Channel::new();
 pub static IR_PIN: Mutex<RefCell<Option<Input<'static>>>> = Mutex::new(RefCell::new(None));

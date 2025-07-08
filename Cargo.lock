@@ -409,24 +409,17 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "esp-backtrace"
-version = "0.14.2"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7660d85e3e7b0e113aaeeffb1a155e64a09a5035d4104031875acdba4cb68e"
+checksum = "7c304bbe17df32db8bc0027a9da989aa3efebbd4e7a79d58850deb29e2af577f"
 dependencies = [
- "defmt 0.3.100",
- "esp-build 0.1.0",
+ "cfg-if",
+ "defmt 1.0.1",
+ "esp-build",
+ "esp-config",
+ "esp-metadata",
  "esp-println",
-]
-
-[[package]]
-name = "esp-build"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b94a4b8d74e7cc7baabcca5b2277b41877e039ad9cd49959d48ef94dac7eab4b"
-dependencies = [
- "quote",
- "syn",
- "termcolor",
+ "heapless",
 ]
 
 [[package]]
@@ -476,7 +469,7 @@ dependencies = [
  "embedded-io",
  "embedded-io-async",
  "enumset",
- "esp-build 0.3.0",
+ "esp-build",
  "esp-config",
  "esp-hal-procmacros",
  "esp-metadata",
@@ -517,7 +510,7 @@ dependencies = [
  "embassy-time",
  "embassy-time-driver",
  "embassy-time-queue-utils",
- "esp-build 0.3.0",
+ "esp-build",
  "esp-config",
  "esp-hal",
  "esp-hal-procmacros",
@@ -569,13 +562,15 @@ dependencies = [
 
 [[package]]
 name = "esp-println"
-version = "0.12.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee38e87bc7e303c299047c0e9bcd0f8ccca7c7e70d1fd78bbb565db14f33beb6"
+checksum = "fae8b38d5fdc1d29d823c4737f18edfb0ccf0406985cf893f87c0cfc26a6ab33"
 dependencies = [
  "critical-section",
- "defmt 0.3.100",
- "esp-build 0.1.0",
+ "defmt 1.0.1",
+ "document-features",
+ "esp-build",
+ "esp-metadata",
  "log",
  "portable-atomic",
 ]

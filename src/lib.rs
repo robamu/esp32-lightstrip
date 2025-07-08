@@ -38,13 +38,12 @@ pub fn repeats_should_be_ignored(action: Action) -> bool {
 pub fn action_to_led_cmd(action: Action) -> Option<LedCmd> {
     match action {
         Action::Power => Some(LedCmd::Switch),
-        // #[cfg(feature = "tree")]
         Action::Play_Pause => Some(LedCmd::Switch),
-        Action::Zero => Some(LedCmd::SelectMode(LightMode::OneColor)),
-        Action::One => Some(LedCmd::SelectMode(LightMode::Pulsing)),
-        Action::Two => Some(LedCmd::SelectMode(LightMode::Rainbow)),
-        Action::Three => Some(LedCmd::SelectMode(LightMode::MovingRainbow)),
-        Action::Four => Some(LedCmd::SelectMode(LightMode::Disco)),
+        Action::One => Some(LedCmd::SelectMode(LightMode::OneColor)),
+        Action::Two => Some(LedCmd::SelectMode(LightMode::Pulsing)),
+        Action::Three => Some(LedCmd::SelectMode(LightMode::Rainbow)),
+        Action::Four => Some(LedCmd::SelectMode(LightMode::MovingRainbow)),
+        Action::Five => Some(LedCmd::SelectMode(LightMode::Disco)),
         Action::VolumeUp => Some(LedCmd::IncreaseBrightness),
         Action::VolumeDown => Some(LedCmd::DecreaseBrightness),
         Action::Up => Some(LedCmd::IncreaseSpeed),

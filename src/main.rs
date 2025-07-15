@@ -19,8 +19,8 @@ use esp_hal::{
     gpio::{Input, Io, Level, Output, Pull},
     timer::timg,
 };
+use esp_println as _;
 use infrared::receiver;
-use log::debug;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -80,7 +80,7 @@ async fn main(spawner: Spawner) {
                     warn!("IR decoding error: {:?}", decoding_error);
                 }
                 ir::IrMessage::Command(cmd) => {
-                    debug!("received NEC command: {:?}", cmd);
+                    defmt::debug!("received NEC command: {:?}", cmd);
                     nec_cmd_received = true;
                     if let Some(button) = cmd.action() {
                         handle_nec_cmd(button, cmd.is_repeat());
